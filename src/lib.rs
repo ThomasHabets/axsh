@@ -7,28 +7,37 @@ use aws_lc_rs::{
     unstable::signature::{ML_DSA_44, ML_DSA_44_SIGNING, PqdsaKeyPair},
 };
 
-struct ServerHello {
+pub struct ServerHello {
     unique: u64,
     // TODO: public ML-DSA key.
     // TODO: public ed25519 key.
 }
 
-struct ClientHello {
+pub struct ClientHello {
     unique: u64,
     // TODO: public ML-DSA key.
     // TODO: public ed25519 key.
 }
 
-enum Packet {
+pub struct ServerComplete {
+    server_hello_bytes: Vec<u8>,
+    client_hello_bytes: Vec<u8>,
+}
+
+pub enum Packet {
     /// Server gives parameters, but unsigned.
     ServerHello(ServerHello),
+
     /// Client gives parameters, signed.
     ///
-    /// Client also provides a random
+    /// Signed with connection signer.
     ClientHello(ClientHello),
+
     /// Server completes the handshake by signing its previous hello and the
     /// client challenge.
-    ServerComplete,
+    ///
+    /// Signed with connection signer.
+    ServerComplete(ServerComplete),
 
     /// Renew packet signing key.
     // Rekey,
@@ -41,19 +50,19 @@ enum Packet {
 
 const ED25519_SIGNATURE_LEN: usize = 64;
 
-struct Signed(Vec<u8>);
+pub struct Signed(Vec<u8>);
 
-trait SignVerify<'a> {
+pub trait SignVerify<'a> {
     fn sign(&self, data: &[u8]) -> Result<Signed>;
     fn verify(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>>;
 }
 
-struct PacketSign {
+pub struct PacketSign {
     key_pair: Ed25519KeyPair,
 }
 
 impl PacketSign {
-    fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let key_pair = Ed25519KeyPair::generate()?;
         Ok(Self { key_pair })
     }
@@ -79,12 +88,12 @@ impl<'a> SignVerify<'a> for PacketSign {
     }
 }
 
-struct ConnSign {
+pub struct ConnSign {
     key_pair: PqdsaKeyPair,
 }
 
 impl ConnSign {
-    fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let alg = &ML_DSA_44_SIGNING;
         Ok(ConnSign {
             key_pair: PqdsaKeyPair::generate(alg)?,
@@ -115,24 +124,6 @@ impl<'a> SignVerify<'a> for ConnSign {
         public_key.verify(msg, sig).unwrap();
         Some(std::borrow::Cow::Borrowed(msg))
     }
-}
-
-fn main() -> Result<()> {
-    let msg = b"hello, world";
-    {
-        let signer = ConnSign::new()?;
-        let signed = signer.sign(msg)?;
-        signer.verify(&signed).unwrap();
-    }
-
-    {
-        let signer = PacketSign::new()?;
-        let signed = signer.sign(msg)?;
-        signer.verify(&signed).unwrap();
-    }
-
-    println!("ok");
-    Ok(())
 }
 
 #[cfg(test)]
