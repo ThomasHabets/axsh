@@ -21,6 +21,7 @@ pub(crate) const ED25519_SIGNATURE_LEN: usize = 64;
 pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
 const CONN_PUBLIC_KEY_VERSION: u8 = 1;
 const CONN_PRIVATE_KEY_MAGIC: &[u8; 8] = b"AXSHCK02";
+pub const CONN_AUTHORIZED_KEY_KIND: &str = "mldsa-ed25519";
 
 pub(crate) fn conn_signature_len() -> usize {
     ML_DSA_44_SIGNING.signature_len() + ED25519_SIGNATURE_LEN
@@ -31,6 +32,25 @@ pub(crate) fn random_u64() -> std::io::Result<u64> {
     let mut file = std::fs::File::open("/dev/urandom")?;
     std::io::Read::read_exact(&mut file, &mut bytes)?;
     Ok(u64::from_be_bytes(bytes))
+}
+
+/// Format a ConnSign public key for authorized-keys files.
+pub fn format_authorized_conn_key(public_key: &[u8]) -> String {
+    format!("{CONN_AUTHORIZED_KEY_KIND} {}", encode_base64(public_key))
+}
+
+/// Parse one authorized-keys line for a ConnSign public key.
+pub fn parse_authorized_conn_key(line: &str) -> Result<Vec<u8>> {
+    let (kind, encoded) = line
+        .split_once(' ')
+        .ok_or_else(|| anyhow::anyhow!("missing key type or key data"))?;
+    if kind != CONN_AUTHORIZED_KEY_KIND {
+        bail!("unsupported key type {kind}");
+    }
+    if encoded.is_empty() {
+        bail!("missing key data");
+    }
+    decode_base64(encoded)
 }
 
 pub struct PacketSign {
@@ -315,9 +335,10 @@ fn decode_conn_public_key(data: &[u8]) -> Result<(Vec<u8>, [u8; ED25519_PUBLIC_K
 }
 
 fn encode_conn_private_key_bundle(ml_dsa_pkcs8: &[u8], ed25519_pkcs8: &[u8]) -> Result<Vec<u8>> {
-    let ml_dsa_len = u32::try_from(ml_dsa_pkcs8.len()).map_err(|_| anyhow::anyhow!("ML-DSA PKCS#8 is too large"))?;
-    let ed25519_len =
-        u32::try_from(ed25519_pkcs8.len()).map_err(|_| anyhow::anyhow!("Ed25519 PKCS#8 is too large"))?;
+    let ml_dsa_len = u32::try_from(ml_dsa_pkcs8.len())
+        .map_err(|_| anyhow::anyhow!("ML-DSA PKCS#8 is too large"))?;
+    let ed25519_len = u32::try_from(ed25519_pkcs8.len())
+        .map_err(|_| anyhow::anyhow!("Ed25519 PKCS#8 is too large"))?;
     let mut out = Vec::with_capacity(
         CONN_PRIVATE_KEY_MAGIC.len() + 8 + ml_dsa_pkcs8.len() + ed25519_pkcs8.len(),
     );

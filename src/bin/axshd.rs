@@ -7,7 +7,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use axsh::{ConnSign, ServerStream, decode_base64};
+use axsh::{ConnSign, ServerStream, parse_authorized_conn_key};
 
 #[derive(Parser)]
 struct Args {
@@ -20,7 +20,7 @@ struct Args {
     authorized_keys_path: std::path::PathBuf,
 }
 
-/// Load authorized keys from file. One pubkey per line.
+/// Load authorized keys from file. One typed pubkey per line.
 fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u8>>> {
     let contents = std::fs::read_to_string(path)?;
     let mut keys = HashSet::new();
@@ -29,7 +29,7 @@ fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u
         if line.is_empty() {
             continue;
         }
-        let key = decode_base64(line).map_err(|e| {
+        let key = parse_authorized_conn_key(line).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("{}:{}: {e}", path.display(), lineno + 1),
@@ -97,7 +97,8 @@ mod tests {
     #[test]
     fn load_authorized_keys_parses_base64_lines() {
         let path = unique_test_path("authorized");
-        std::fs::write(&path, "Zg==\n\nZm9v\n").expect("failed to write allowlist");
+        std::fs::write(&path, "mldsa-ed25519 Zg==\n\nmldsa-ed25519 Zm9v\n")
+            .expect("failed to write allowlist");
 
         let keys = load_authorized_keys(&path).expect("failed to load allowlist");
         let expected = HashSet::from([b"f".to_vec(), b"foo".to_vec()]);
@@ -109,9 +110,20 @@ mod tests {
     #[test]
     fn load_authorized_keys_rejects_invalid_base64() {
         let path = unique_test_path("invalid-authorized");
-        std::fs::write(&path, "not-base64!\n").expect("failed to write allowlist");
+        std::fs::write(&path, "mldsa-ed25519 not-base64!\n").expect("failed to write allowlist");
 
         let err = load_authorized_keys(&path).expect_err("loaded invalid allowlist");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        std::fs::remove_file(path).expect("failed to remove allowlist");
+    }
+
+    #[test]
+    fn load_authorized_keys_rejects_wrong_key_type() {
+        let path = unique_test_path("wrong-type");
+        std::fs::write(&path, "ed25519 Zg==\n").expect("failed to write allowlist");
+
+        let err = load_authorized_keys(&path).expect_err("loaded wrong key type");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
         std::fs::remove_file(path).expect("failed to remove allowlist");
