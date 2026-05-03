@@ -4,9 +4,11 @@ use tokio::io::AsyncWriteExt;
 
 #[derive(Parser)]
 struct Args {
+    /// Address to connect to.
     #[arg()]
     addr: String,
 
+    /// Private client key.
     #[arg(short = 'k', long = "key", default_value = "axsh-conn-sign.pk8")]
     key_path: std::path::PathBuf,
 }

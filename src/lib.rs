@@ -10,15 +10,25 @@ mod base64;
 mod client;
 pub mod hdlc;
 mod packet;
+mod server;
+mod transport;
 pub use base64::{decode_base64, encode_base64};
 pub use client::ClientStream;
 pub use packet::{ClientHello, Packet, ServerComplete, ServerHello, SignVerify, Signed};
+pub use server::ServerStream;
 
 pub(crate) const ED25519_SIGNATURE_LEN: usize = 64;
 pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
 
 pub(crate) fn conn_signature_len() -> usize {
     ML_DSA_44_SIGNING.signature_len()
+}
+
+pub(crate) fn random_u64() -> std::io::Result<u64> {
+    let mut bytes = [0u8; 8];
+    let mut file = std::fs::File::open("/dev/urandom")?;
+    std::io::Read::read_exact(&mut file, &mut bytes)?;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 pub struct PacketSign {

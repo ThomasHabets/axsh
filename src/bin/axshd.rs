@@ -1,34 +1,26 @@
 use std::collections::HashSet;
-use std::fs::File;
 use std::sync::Arc;
 
 use clap::Parser;
 use tokio::{
-    io::AsyncWriteExt,
+    io::AsyncReadExt,
     net::{TcpListener, TcpStream},
 };
 
-use axsh::{
-    ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, ServerComplete, ServerHello,
-    decode_base64, hdlc,
-};
+use axsh::{ConnSign, ServerStream, decode_base64};
 
 #[derive(Parser)]
 struct Args {
+    /// File containing server private key.
     #[arg(short = 'k', long = "key", default_value = "axshd-conn-sign.pk8")]
     key_path: std::path::PathBuf,
 
+    /// File containing authorized public keys.
     #[arg(short = 'a', long = "authorized-keys")]
     authorized_keys_path: std::path::PathBuf,
 }
 
-fn random_u64() -> std::io::Result<u64> {
-    let mut bytes = [0u8; 8];
-    let mut file = File::open("/dev/urandom")?;
-    std::io::Read::read_exact(&mut file, &mut bytes)?;
-    Ok(u64::from_be_bytes(bytes))
-}
-
+/// Load authorized keys from file. One pubkey per line.
 fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u8>>> {
     let contents = std::fs::read_to_string(path)?;
     let mut keys = HashSet::new();
@@ -48,105 +40,24 @@ fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u
     Ok(keys)
 }
 
+/// Handle one connected client.
 async fn handle_connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     conn_sign: Arc<ConnSign>,
     authorized_keys: Arc<HashSet<Vec<u8>>>,
-    unique: u64,
 ) -> std::io::Result<()> {
-    let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
-    let packet = Packet::ServerHello(ServerHello::new(
-        unique,
-        conn_sign
-            .public_key_bytes()
-            .map_err(std::io::Error::other)?,
-        packet_sign.public_key_bytes(),
-    ));
-    let server_hello_wire = packet
-        .serialize(conn_sign.as_ref())
-        .map_err(std::io::Error::other)?;
-    let frame = hdlc::encode(&server_hello_wire);
-    stream.write_all(&frame).await?;
-
-    let mut client_packet_verify = None;
-
-    let frame = hdlc::read_frame_async(&mut stream).await?;
-    let client_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-    let packet = Packet::deserialize(
-        &client_hello_wire,
-        None,
-        client_packet_verify
-            .as_ref()
-            .map(|x| x as &dyn axsh::SignVerify),
-    )
-    .map_err(std::io::Error::other)?;
-    match packet {
-        Packet::ClientHello(hello) => {
-            eprintln!(
-                "received ClientHello: server_unique={}, client_unique={}, conn_key={} bytes, packet_key={} bytes",
-                hello.server_unique(),
-                hello.unique(),
-                hello.conn_sign_public_key().len(),
-                hello.packet_sign_public_key().len()
-            );
-            if hello.server_unique() != unique {
-                return Err(std::io::Error::other(format!(
-                    "client echoed server_unique={} but expected {}",
-                    hello.server_unique(),
-                    unique
-                )));
-            }
-            if !authorized_keys.contains(hello.conn_sign_public_key()) {
-                return Err(std::io::Error::other(
-                    "client ConnSign key is not authorized",
-                ));
-            }
-            let _client_conn_verify = ConnVerify::new(hello.conn_sign_public_key().to_vec());
-            client_packet_verify = Some(PacketVerify::new(hello.packet_sign_public_key()));
-
-            let mut transcript = server_hello_wire.clone();
-            transcript.extend(&client_hello_wire);
-            let packet = Packet::ServerComplete(ServerComplete::new(
-                conn_sign
-                    .sign_detached(&transcript)
-                    .map_err(std::io::Error::other)?,
-            ));
-            let wire = packet
-                .serialize(conn_sign.as_ref())
-                .map_err(std::io::Error::other)?;
-            let frame = hdlc::encode(&wire);
-            stream.write_all(&frame).await?;
-        }
-        other => {
-            return Err(std::io::Error::other(format!(
-                "expected ClientHello, got {other:?}"
-            )));
-        }
-    }
+    let mut stream =
+        ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
+    let mut buf = [0u8; 4096];
 
     loop {
-        let frame = hdlc::read_frame_async(&mut stream).await?;
-        let client_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-        let packet = Packet::deserialize(
-            &client_hello_wire,
-            None,
-            client_packet_verify
-                .as_ref()
-                .map(|x| x as &dyn axsh::SignVerify),
-        )
-        .map_err(std::io::Error::other)?;
-        match packet {
-            Packet::Payload(data) => {
-                println!("Got data {data:?}");
-            }
-            other => {
-                return Err(std::io::Error::other(format!(
-                    "expected Payload, got {other:?}"
-                )));
-            }
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            eprintln!("Client disconnected");
+            return Ok(());
         }
+        println!("Got data {:?}", &buf[..n]);
     }
-    Ok(())
 }
 
 #[tokio::main]
@@ -158,12 +69,11 @@ async fn main() -> std::io::Result<()> {
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        let unique = random_u64()?;
         let conn_sign = Arc::clone(&conn_sign);
         let authorized_keys = Arc::clone(&authorized_keys);
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, conn_sign, authorized_keys, unique).await {
+            if let Err(e) = handle_connection(stream, conn_sign, authorized_keys).await {
                 eprintln!("connection {addr} error: {e}");
             }
         });
