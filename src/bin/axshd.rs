@@ -7,6 +7,13 @@ use tokio::{
 use axsh::{
     ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, ServerComplete, ServerHello, hdlc,
 };
+use clap::Parser;
+
+#[derive(Parser)]
+struct Args {
+    #[arg(short = 'k', long = "key", default_value = "axshd-conn-sign.pk8")]
+    key_path: std::path::PathBuf,
+}
 
 async fn handle_connection(
     mut stream: TcpStream,
@@ -74,10 +81,8 @@ async fn handle_connection(
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let key_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "axshd-conn-sign.pk8".to_string());
-    let conn_sign = Arc::new(ConnSign::from_file(&key_path).map_err(std::io::Error::other)?);
+    let args = Args::parse();
+    let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
     let mut next_unique = 1u64;
     let listener = TcpListener::bind("0.0.0.0:12345").await?;
 

@@ -1,7 +1,17 @@
-use std::{env, fs::File};
+use std::fs::File;
 
 use axsh::{ClientHello, ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, hdlc};
+use clap::Parser;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
+
+#[derive(Parser)]
+struct Args {
+    #[arg()]
+    addr: String,
+
+    #[arg(short = 'k', long = "key", default_value = "axsh-conn-sign.pk8")]
+    key_path: std::path::PathBuf,
+}
 
 fn random_u64() -> std::io::Result<u64> {
     let mut bytes = [0u8; 8];
@@ -12,14 +22,10 @@ fn random_u64() -> std::io::Result<u64> {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let mut args = env::args().skip(1);
-    let addr = args.next().unwrap_or_else(|| "127.0.0.1:12345".to_string());
-    let key_path = args
-        .next()
-        .unwrap_or_else(|| "axsh-conn-sign.pk8".to_string());
-    let conn_sign = ConnSign::from_file(&key_path).map_err(std::io::Error::other)?;
+    let args = Args::parse();
+    let conn_sign = ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?;
     let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
-    let mut stream = TcpStream::connect(&addr).await?;
+    let mut stream = TcpStream::connect(&args.addr).await?;
 
     let frame = hdlc::read_frame(&mut stream).await?;
     let server_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
