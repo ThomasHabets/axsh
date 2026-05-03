@@ -74,7 +74,10 @@ async fn handle_connection(
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let conn_sign = Arc::new(ConnSign::new().map_err(std::io::Error::other)?);
+    let key_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "axshd-conn-sign.pk8".to_string());
+    let conn_sign = Arc::new(ConnSign::from_file(&key_path).map_err(std::io::Error::other)?);
     let mut next_unique = 1u64;
     let listener = TcpListener::bind("0.0.0.0:12345").await?;
 

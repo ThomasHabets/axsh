@@ -12,10 +12,12 @@ fn random_u64() -> std::io::Result<u64> {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:12345".to_string());
-    let conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
+    let mut args = env::args().skip(1);
+    let addr = args.next().unwrap_or_else(|| "127.0.0.1:12345".to_string());
+    let key_path = args
+        .next()
+        .unwrap_or_else(|| "axsh-conn-sign.pk8".to_string());
+    let conn_sign = ConnSign::from_file(&key_path).map_err(std::io::Error::other)?;
     let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
     let mut stream = TcpStream::connect(&addr).await?;
 

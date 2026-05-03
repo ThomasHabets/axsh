@@ -76,6 +76,20 @@ impl ConnSign {
         })
     }
 
+    /// Load an ML-DSA keypair from PKCS#8 v1 DER bytes.
+    pub fn from_pkcs8(bytes: &[u8]) -> Result<Self> {
+        let alg = &ML_DSA_44_SIGNING;
+        Ok(ConnSign {
+            key_pair: PqdsaKeyPair::from_pkcs8(alg, bytes)?,
+        })
+    }
+
+    /// Load an ML-DSA keypair from a PKCS#8 v1 DER file.
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        Self::from_pkcs8(&bytes)
+    }
+
     /// Return the ML-DSA public key bytes for this signer, encoded as DER.
     pub fn public_key_bytes(&self) -> Result<Vec<u8>> {
         Ok(self
@@ -91,6 +105,23 @@ impl ConnSign {
     pub fn sign_detached(&self, data: &[u8]) -> Result<Vec<u8>> {
         let signed = self.sign(data)?;
         Ok(signed.0[..conn_signature_len()].to_vec())
+    }
+
+    /// Write the ML-DSA private key to a PKCS#8 v1 DER file.
+    pub fn write_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let path = path.as_ref();
+        let document = self.key_pair.to_pkcs8()?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            options.mode(0o600);
+        }
+        let mut file = options.open(path)?;
+        std::io::Write::write_all(&mut file, document.as_ref())?;
+        Ok(())
     }
 }
 
@@ -194,5 +225,50 @@ impl SignVerify for ConnVerify {
             .verify(msg, sig)
             .map(|_| std::borrow::Cow::Borrowed(msg))
             .ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnSign, SignVerify};
+
+    fn unique_test_path(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("axsh-{name}-{}-{nanos}.pk8", std::process::id()))
+    }
+
+    #[test]
+    fn connsign_round_trips_through_pkcs8_file() {
+        let path = unique_test_path("connsign");
+        let original = ConnSign::new().expect("failed to generate signer");
+        original
+            .write_to_file(&path)
+            .expect("failed to write signer");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(&path)
+                .expect("failed to stat temp key file")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let loaded = ConnSign::from_file(&path).expect("failed to load signer");
+        let original_public_key = original.public_key_bytes().expect("missing public key");
+        let loaded_public_key = loaded.public_key_bytes().expect("missing public key");
+        assert_eq!(original_public_key, loaded_public_key);
+
+        let message = b"round-trip";
+        let signed = loaded.sign(message).expect("failed to sign");
+        let verified = original.verify(&signed).expect("failed to verify");
+        assert_eq!(verified.as_ref(), message);
+
+        std::fs::remove_file(path).expect("failed to remove temp key file");
     }
 }
