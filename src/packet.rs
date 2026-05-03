@@ -28,7 +28,7 @@ impl ServerHello {
         self.unique
     }
 
-    /// Return the server's ML-DSA public key bytes.
+    /// Return the server's bundled ConnSign public key bytes.
     pub fn conn_sign_public_key(&self) -> &[u8] {
         &self.conn_sign_public_key
     }
@@ -73,7 +73,7 @@ impl ClientHello {
         self.unique
     }
 
-    /// Return the client's ML-DSA public key bytes.
+    /// Return the client's bundled ConnSign public key bytes.
     pub fn conn_sign_public_key(&self) -> &[u8] {
         &self.conn_sign_public_key
     }
