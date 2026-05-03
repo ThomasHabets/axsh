@@ -6,8 +6,10 @@ use aws_lc_rs::{
     unstable::signature::{ML_DSA_44, ML_DSA_44_SIGNING, PqdsaKeyPair},
 };
 
+mod base64;
 pub mod hdlc;
 mod packet;
+pub use base64::{decode_base64, encode_base64};
 pub use packet::{ClientHello, Packet, ServerComplete, ServerHello, SignVerify, Signed};
 
 pub(crate) const ED25519_SIGNATURE_LEN: usize = 64;
