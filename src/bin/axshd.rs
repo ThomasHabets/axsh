@@ -1,13 +1,14 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use log::debug;
 use clap::Parser;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
-use axsh::{ConnSign, ServerStream, parse_authorized_conn_key};
+use axsh::{ConnSign, LogLevel, ServerStream, init_logging, parse_authorized_conn_key};
 
 #[derive(Parser)]
 struct Args {
@@ -18,6 +19,10 @@ struct Args {
     /// File containing authorized public keys.
     #[arg(short = 'a', long = "authorized-keys")]
     authorized_keys_path: std::path::PathBuf,
+
+    /// Log level for stderr diagnostics.
+    #[arg(short = 'v', long = "log-level", value_enum, default_value = "info")]
+    log_level: LogLevel,
 }
 
 /// Load authorized keys from file. One typed pubkey per line.
@@ -53,16 +58,17 @@ async fn handle_connection(
     loop {
         let n = stream.read(&mut buf).await?;
         if n == 0 {
-            eprintln!("Client disconnected");
+            log::info!("client disconnected");
             return Ok(());
         }
         let buf = &buf[..n];
-        println!("Got data {:?}", buf);
+        debug!("Got data {:?}", buf);
 
         // TODO: read only complete lines.
         let s = String::from_utf8_lossy(buf);
-        println!("Writing {s}");
-        stream.write_all(format!("Server replying to <{s}>\n").as_bytes()).await?;
+        stream
+            .write_all(format!("Server replying to <{s}>\n").as_bytes())
+            .await?;
         stream.flush().await?;
     }
 }
@@ -70,6 +76,7 @@ async fn handle_connection(
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
+    init_logging(args.log_level).map_err(std::io::Error::other)?;
     let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
     let authorized_keys = Arc::new(load_authorized_keys(&args.authorized_keys_path)?);
     let listener = TcpListener::bind("0.0.0.0:12345").await?;
@@ -81,7 +88,7 @@ async fn main() -> std::io::Result<()> {
 
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, conn_sign, authorized_keys).await {
-                eprintln!("connection {addr} error: {e}");
+                log::error!("connection {addr} error: {e}");
             }
         });
     }

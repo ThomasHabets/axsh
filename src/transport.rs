@@ -113,7 +113,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
                 .map_err(std::io::Error::other)?;
             match packet {
                 Packet::Payload(data) => {
-                    eprintln!("received Payload: {} bytes", data.len());
+                    log::debug!("received Payload: {} bytes", data.len());
                     if data.is_empty() {
                         continue;
                     }

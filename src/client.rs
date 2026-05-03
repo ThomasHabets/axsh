@@ -29,7 +29,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
                 "expected ServerHello, got {packet:?}"
             )));
         };
-        eprintln!(
+        log::debug!(
             "received ServerHello: server_unique={}, conn_key={} bytes, packet_key={} bytes",
             server_hello.unique(),
             server_hello.conn_sign_public_key().len(),
@@ -61,7 +61,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
         let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
         match packet {
             Packet::ServerComplete(complete) => {
-                eprintln!(
+                log::debug!(
                     "received ServerComplete: signature={} bytes",
                     complete.signature().len()
                 );

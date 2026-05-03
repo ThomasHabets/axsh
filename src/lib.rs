@@ -5,6 +5,7 @@ use aws_lc_rs::{
     signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
     unstable::signature::{ML_DSA_44, ML_DSA_44_SIGNING, PqdsaKeyPair},
 };
+use clap::ValueEnum;
 
 mod base64;
 mod client;
@@ -23,6 +24,15 @@ const CONN_PUBLIC_KEY_VERSION: u8 = 1;
 const CONN_PRIVATE_KEY_MAGIC: &[u8; 8] = b"AXSHCK02";
 pub const CONN_AUTHORIZED_KEY_KIND: &str = "mldsa-ed25519";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
 pub(crate) fn conn_signature_len() -> usize {
     ML_DSA_44_SIGNING.signature_len() + ED25519_SIGNATURE_LEN
 }
@@ -32,6 +42,14 @@ pub(crate) fn random_u64() -> std::io::Result<u64> {
     let mut file = std::fs::File::open("/dev/urandom")?;
     std::io::Read::read_exact(&mut file, &mut bytes)?;
     Ok(u64::from_be_bytes(bytes))
+}
+
+/// Initialize stderr logging with the requested log level.
+pub fn init_logging(level: LogLevel) -> Result<()> {
+    stderrlog::new()
+        .verbosity(level as usize)
+        .init()
+        .map_err(|e| anyhow::anyhow!("failed to initialize logging: {e}"))
 }
 
 /// Format a ConnSign public key for authorized-keys files.

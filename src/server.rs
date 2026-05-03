@@ -47,7 +47,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                 "expected ClientHello, got {packet:?}"
             )));
         };
-        eprintln!(
+        log::debug!(
             "received ClientHello: server_unique={}, client_unique={}, conn_key={} bytes, packet_key={} bytes",
             client_hello.server_unique(),
             client_hello.unique(),
