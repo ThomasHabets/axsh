@@ -1,11 +1,72 @@
 use anyhow::{Result, bail, ensure};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::AsyncRead;
 
 const FLAG: u8 = 0x7e;
 const ESCAPE: u8 = 0x7d;
 const ESCAPE_XOR: u8 = 0x20;
 const INITIAL_FCS: u16 = 0xffff;
 const FCS_POLY: u16 = 0x8408;
+
+pub(crate) struct AsyncFrameReader {
+    frame: Vec<u8>,
+    in_frame: bool,
+}
+
+impl AsyncFrameReader {
+    /// Create a reusable async HDLC frame reader state machine.
+    pub(crate) fn new() -> Self {
+        Self {
+            frame: Vec::new(),
+            in_frame: false,
+        }
+    }
+
+    /// Poll one HDLC frame from an async byte stream.
+    pub(crate) fn poll_read_frame<R: AsyncRead + Unpin>(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut reader: Pin<&mut R>,
+    ) -> Poll<std::io::Result<Option<Vec<u8>>>> {
+        loop {
+            let mut byte = [0u8; 1];
+            let mut buf = tokio::io::ReadBuf::new(&mut byte);
+            match reader.as_mut().poll_read(cx, &mut buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Ok(())) => {
+                    let filled = buf.filled();
+                    if filled.is_empty() {
+                        if !self.in_frame {
+                            return Poll::Ready(Ok(None));
+                        }
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "EOF while reading HDLC frame",
+                        )));
+                    }
+
+                    let byte = filled[0];
+                    if !self.in_frame {
+                        if byte == FLAG {
+                            self.frame.clear();
+                            self.frame.push(byte);
+                            self.in_frame = true;
+                        }
+                        continue;
+                    }
+
+                    self.frame.push(byte);
+                    if byte == FLAG {
+                        self.in_frame = false;
+                        return Poll::Ready(Ok(Some(std::mem::take(&mut self.frame))));
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Encode a payload into an HDLC frame with byte-stuffing and a CRC-16 FCS.
 pub fn encode(payload: &[u8]) -> Vec<u8> {
@@ -49,13 +110,25 @@ pub fn decode(frame: &[u8]) -> Result<Vec<u8>> {
     Ok(payload.to_vec())
 }
 
-/// Read a single HDLC frame from an async byte stream.
-pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+/// Read a single HDLC frame from a blocking byte stream.
+pub fn read_frame<R: std::io::Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
     let mut frame = Vec::new();
     let mut in_frame = false;
+    let mut byte = [0u8; 1];
 
     loop {
-        let byte = reader.read_u8().await?;
+        match std::io::Read::read(reader, &mut byte)? {
+            0 if !in_frame => return Ok(None),
+            0 => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "EOF while reading HDLC frame",
+                ));
+            }
+            _ => {}
+        }
+
+        let byte = byte[0];
         if !in_frame {
             if byte == FLAG {
                 frame.clear();
@@ -67,8 +140,22 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result
 
         frame.push(byte);
         if byte == FLAG {
-            return Ok(frame);
+            return Ok(Some(frame));
         }
+    }
+}
+
+/// Read a single HDLC frame from an async byte stream.
+pub async fn read_frame_async<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+    let mut frame_reader = AsyncFrameReader::new();
+    match std::future::poll_fn(|cx| frame_reader.poll_read_frame(cx, Pin::new(&mut *reader)))
+        .await?
+    {
+        Some(frame) => Ok(frame),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "EOF while reading HDLC frame",
+        )),
     }
 }
 
@@ -142,5 +229,21 @@ mod tests {
     fn reject_missing_flags() {
         let err = decode(&[1, 2, 3, 4]).unwrap_err();
         assert!(err.to_string().contains("opening flag"));
+    }
+
+    #[test]
+    fn read_frame_reads_one_frame() -> std::io::Result<()> {
+        let frame = encode(b"payload");
+        let mut reader = std::io::Cursor::new(frame);
+        let read = read_frame(&mut reader)?.expect("missing frame");
+        assert_eq!(decode(&read).expect("decode failed"), b"payload");
+        Ok(())
+    }
+
+    #[test]
+    fn read_frame_returns_none_on_clean_eof() -> std::io::Result<()> {
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        assert!(read_frame(&mut reader)?.is_none());
+        Ok(())
     }
 }

@@ -7,9 +7,11 @@ use aws_lc_rs::{
 };
 
 mod base64;
+mod client;
 pub mod hdlc;
 mod packet;
 pub use base64::{decode_base64, encode_base64};
+pub use client::ClientStream;
 pub use packet::{ClientHello, Packet, ServerComplete, ServerHello, SignVerify, Signed};
 
 pub(crate) const ED25519_SIGNATURE_LEN: usize = 64;

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::sync::Arc;
+
+use clap::Parser;
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -10,7 +12,6 @@ use axsh::{
     ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, ServerComplete, ServerHello,
     decode_base64, hdlc,
 };
-use clap::Parser;
 
 #[derive(Parser)]
 struct Args {
@@ -67,10 +68,18 @@ async fn handle_connection(
     let frame = hdlc::encode(&server_hello_wire);
     stream.write_all(&frame).await?;
 
-    let frame = hdlc::read_frame(&mut stream).await?;
+    let mut client_packet_verify = None;
+
+    let frame = hdlc::read_frame_async(&mut stream).await?;
     let client_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-    let packet =
-        Packet::deserialize(&client_hello_wire, None, None).map_err(std::io::Error::other)?;
+    let packet = Packet::deserialize(
+        &client_hello_wire,
+        None,
+        client_packet_verify
+            .as_ref()
+            .map(|x| x as &dyn axsh::SignVerify),
+    )
+    .map_err(std::io::Error::other)?;
     match packet {
         Packet::ClientHello(hello) => {
             eprintln!(
@@ -93,9 +102,9 @@ async fn handle_connection(
                 ));
             }
             let _client_conn_verify = ConnVerify::new(hello.conn_sign_public_key().to_vec());
-            let _client_packet_verify = PacketVerify::new(hello.packet_sign_public_key());
+            client_packet_verify = Some(PacketVerify::new(hello.packet_sign_public_key()));
 
-            let mut transcript = server_hello_wire;
+            let mut transcript = server_hello_wire.clone();
             transcript.extend(&client_hello_wire);
             let packet = Packet::ServerComplete(ServerComplete::new(
                 conn_sign
@@ -112,6 +121,29 @@ async fn handle_connection(
             return Err(std::io::Error::other(format!(
                 "expected ClientHello, got {other:?}"
             )));
+        }
+    }
+
+    loop {
+        let frame = hdlc::read_frame_async(&mut stream).await?;
+        let client_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
+        let packet = Packet::deserialize(
+            &client_hello_wire,
+            None,
+            client_packet_verify
+                .as_ref()
+                .map(|x| x as &dyn axsh::SignVerify),
+        )
+        .map_err(std::io::Error::other)?;
+        match packet {
+            Packet::Payload(data) => {
+                println!("Got data {data:?}");
+            }
+            other => {
+                return Err(std::io::Error::other(format!(
+                    "expected Payload, got {other:?}"
+                )));
+            }
         }
     }
     Ok(())
