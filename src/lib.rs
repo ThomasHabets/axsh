@@ -86,6 +86,12 @@ impl ConnSign {
             .as_ref()
             .to_vec())
     }
+
+    /// Produce a detached ML-DSA signature for `data`.
+    pub fn sign_detached(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let signed = self.sign(data)?;
+        Ok(signed.0[..conn_signature_len()].to_vec())
+    }
 }
 
 impl SignVerify for ConnSign {
@@ -160,6 +166,13 @@ impl ConnVerify {
     /// Create an ML-DSA verifier from a DER-encoded public key.
     pub fn new(public_key_der: Vec<u8>) -> Self {
         Self { public_key_der }
+    }
+
+    /// Verify a detached ML-DSA signature against `data`.
+    pub fn verify_detached(&self, signature: &[u8], data: &[u8]) -> bool {
+        let mut signed = signature.to_vec();
+        signed.extend(data);
+        self.verify(&Signed(signed)).is_some()
     }
 }
 

@@ -4,7 +4,9 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use axsh::{ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, ServerHello, hdlc};
+use axsh::{
+    ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, ServerComplete, ServerHello, hdlc,
+};
 
 async fn handle_connection(
     mut stream: TcpStream,
@@ -19,15 +21,16 @@ async fn handle_connection(
             .map_err(std::io::Error::other)?,
         packet_sign.public_key_bytes(),
     ));
-    let wire = packet
+    let server_hello_wire = packet
         .serialize(conn_sign.as_ref())
         .map_err(std::io::Error::other)?;
-    let frame = hdlc::encode(&wire);
+    let frame = hdlc::encode(&server_hello_wire);
     stream.write_all(&frame).await?;
 
     let frame = hdlc::read_frame(&mut stream).await?;
-    let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-    let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+    let client_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
+    let packet =
+        Packet::deserialize(&client_hello_wire, None, None).map_err(std::io::Error::other)?;
     match packet {
         Packet::ClientHello(hello) => {
             eprintln!(
@@ -46,6 +49,19 @@ async fn handle_connection(
             }
             let _client_conn_verify = ConnVerify::new(hello.conn_sign_public_key().to_vec());
             let _client_packet_verify = PacketVerify::new(hello.packet_sign_public_key());
+
+            let mut transcript = server_hello_wire;
+            transcript.extend(&client_hello_wire);
+            let packet = Packet::ServerComplete(ServerComplete::new(
+                conn_sign
+                    .sign_detached(&transcript)
+                    .map_err(std::io::Error::other)?,
+            ));
+            let wire = packet
+                .serialize(conn_sign.as_ref())
+                .map_err(std::io::Error::other)?;
+            let frame = hdlc::encode(&wire);
+            stream.write_all(&frame).await?;
         }
         other => {
             return Err(std::io::Error::other(format!(

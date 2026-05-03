@@ -20,8 +20,9 @@ async fn main() -> std::io::Result<()> {
     let mut stream = TcpStream::connect(&addr).await?;
 
     let frame = hdlc::read_frame(&mut stream).await?;
-    let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-    let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+    let server_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
+    let packet =
+        Packet::deserialize(&server_hello_wire, None, None).map_err(std::io::Error::other)?;
 
     match packet {
         Packet::ServerHello(hello) => {
@@ -31,7 +32,7 @@ async fn main() -> std::io::Result<()> {
                 hello.conn_sign_public_key().len(),
                 hello.packet_sign_public_key().len()
             );
-            let _server_conn_verify = ConnVerify::new(hello.conn_sign_public_key().to_vec());
+            let server_conn_verify = ConnVerify::new(hello.conn_sign_public_key().to_vec());
             let _server_packet_verify = PacketVerify::new(hello.packet_sign_public_key());
 
             let packet = Packet::ClientHello(ClientHello::new(
@@ -42,11 +43,35 @@ async fn main() -> std::io::Result<()> {
                     .map_err(std::io::Error::other)?,
                 packet_sign.public_key_bytes(),
             ));
-            let wire = packet
+            let client_hello_wire = packet
                 .serialize(&conn_sign)
                 .map_err(std::io::Error::other)?;
-            let frame = hdlc::encode(&wire);
+            let frame = hdlc::encode(&client_hello_wire);
             stream.write_all(&frame).await?;
+
+            let frame = hdlc::read_frame(&mut stream).await?;
+            let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
+            let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+            match packet {
+                Packet::ServerComplete(complete) => {
+                    eprintln!(
+                        "received ServerComplete: signature={} bytes",
+                        complete.signature().len()
+                    );
+                    let mut transcript = server_hello_wire;
+                    transcript.extend(&client_hello_wire);
+                    if !server_conn_verify.verify_detached(complete.signature(), &transcript) {
+                        return Err(std::io::Error::other(
+                            "server complete transcript signature verification failed",
+                        ));
+                    }
+                }
+                other => {
+                    return Err(std::io::Error::other(format!(
+                        "expected ServerComplete, got {other:?}"
+                    )));
+                }
+            }
         }
         other => {
             return Err(std::io::Error::other(format!(

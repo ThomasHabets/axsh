@@ -86,17 +86,18 @@ impl ClientHello {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerComplete {
-    server_hello_bytes: Vec<u8>,
-    client_hello_bytes: Vec<u8>,
+    signature: Vec<u8>,
 }
 
 impl ServerComplete {
-    /// Create a server-complete packet body from the two transcript fragments.
-    pub fn new(server_hello_bytes: Vec<u8>, client_hello_bytes: Vec<u8>) -> Self {
-        Self {
-            server_hello_bytes,
-            client_hello_bytes,
-        }
+    /// Create a server-complete packet body from a detached transcript signature.
+    pub fn new(signature: Vec<u8>) -> Self {
+        Self { signature }
+    }
+
+    /// Return the detached server transcript signature.
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
     }
 }
 
@@ -110,10 +111,8 @@ pub enum Packet {
     /// Signed with connection signer.
     ClientHello(ClientHello),
 
-    /// Server completes the handshake by signing its previous hello and the
-    /// client challenge.
-    ///
-    /// Signed with connection signer.
+    /// Server completes the handshake with a detached signature over the
+    /// concatenated `ServerHello` and `ClientHello` packet bytes.
     ServerComplete(ServerComplete),
 
     /// Renew packet signing key.
@@ -148,8 +147,9 @@ pub trait SignVerify {
 impl Packet {
     /// Serialize a packet into the wire format.
     ///
-    /// `ServerHello` is emitted unsigned. Every other packet signs only the
-    /// bytes after the packet type byte.
+    /// `ServerHello` is emitted unsigned. `ServerComplete` carries only a
+    /// detached transcript signature. `ClientHello` and `Payload` sign only
+    /// the bytes after the packet type byte.
     pub fn serialize(&self, signer: &dyn SignVerify) -> Result<Vec<u8>> {
         match self {
             Packet::ServerHello(hello) => {
@@ -163,19 +163,11 @@ impl Packet {
                 let body = encode_client_hello(hello);
                 serialize_signed(PACKET_TYPE_CLIENT_HELLO, &body, signer)
             }
-            Packet::ServerComplete(ServerComplete {
-                server_hello_bytes,
-                client_hello_bytes,
-            }) => {
-                let mut body = Vec::with_capacity(
-                    len_varint_len(server_hello_bytes.len())
-                        + server_hello_bytes.len()
-                        + client_hello_bytes.len(),
-                );
-                encode_len(server_hello_bytes.len(), &mut body);
-                body.extend(server_hello_bytes);
-                body.extend(client_hello_bytes);
-                serialize_signed(PACKET_TYPE_SERVER_COMPLETE, &body, signer)
+            Packet::ServerComplete(complete) => {
+                let mut out = Vec::with_capacity(1 + complete.signature.len());
+                out.push(PACKET_TYPE_SERVER_COMPLETE);
+                out.extend(&complete.signature);
+                Ok(out)
             }
             Packet::Payload(data) => serialize_signed(PACKET_TYPE_PAYLOAD, data, signer),
         }
@@ -185,7 +177,7 @@ impl Packet {
     /// packet does not carry its own verification key.
     pub fn deserialize(
         data: &[u8],
-        conn_verifier: Option<&dyn SignVerify>,
+        _conn_verifier: Option<&dyn SignVerify>,
         packet_verifier: Option<&dyn SignVerify>,
     ) -> Result<Self> {
         let (&packet_type, rest) = data
@@ -201,21 +193,7 @@ impl Packet {
                 Ok(Packet::ClientHello(hello))
             }
             PACKET_TYPE_SERVER_COMPLETE => {
-                let verifier =
-                    conn_verifier.ok_or_else(|| anyhow!("missing connection verifier"))?;
-                let body = verify_signed(rest, verifier)?;
-                let (server_hello_len, rest) = decode_len(body.as_ref())?;
-                ensure!(
-                    rest.len() >= server_hello_len,
-                    "server complete truncated: {} < {}",
-                    rest.len(),
-                    server_hello_len
-                );
-                let (server_hello_bytes, client_hello_bytes) = rest.split_at(server_hello_len);
-                Ok(Packet::ServerComplete(ServerComplete {
-                    server_hello_bytes: server_hello_bytes.to_vec(),
-                    client_hello_bytes: client_hello_bytes.to_vec(),
-                }))
+                Ok(Packet::ServerComplete(decode_server_complete(rest)?))
             }
             PACKET_TYPE_PAYLOAD => {
                 let verifier = packet_verifier.ok_or_else(|| anyhow!("missing packet verifier"))?;
@@ -313,6 +291,17 @@ fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
         conn_sign_public_key,
         packet_sign_public_key,
     ))
+}
+
+/// Decode a detached server-complete signature payload.
+fn decode_server_complete(data: &[u8]) -> Result<ServerComplete> {
+    ensure!(
+        data.len() == conn_signature_len(),
+        "server complete signature length {} != {}",
+        data.len(),
+        conn_signature_len()
+    );
+    Ok(ServerComplete::new(data.to_vec()))
 }
 
 /// Decode a fixed-width, big-endian `u64` and return the remaining bytes.
@@ -465,11 +454,13 @@ mod tests {
 
         let conn_signed = conn_sign.sign(b"conn-msg")?;
         let packet_signed = packet_sign.sign(b"packet-msg")?;
+        let conn_detached = conn_sign.sign_detached(b"conn-msg")?;
 
         assert_eq!(
             conn_verify.verify(&conn_signed).unwrap().as_ref(),
             b"conn-msg"
         );
+        assert!(conn_verify.verify_detached(&conn_detached, b"conn-msg"));
         assert_eq!(
             packet_verify.verify(&packet_signed).unwrap().as_ref(),
             b"packet-msg"
@@ -507,21 +498,12 @@ mod tests {
     #[test]
     fn packet_round_trip_server_complete() -> Result<()> {
         let conn_sign = ConnSign::new()?;
-        let packet_sign = PacketSign::new()?;
-        let packet = Packet::ServerComplete(ServerComplete {
-            server_hello_bytes: vec![0xaa; 140],
-            client_hello_bytes: vec![0xbb; 17],
-        });
+        let signature = conn_sign.sign_detached(b"server-hello||client-hello")?;
+        let packet = Packet::ServerComplete(ServerComplete::new(signature.clone()));
         let encoded = packet.serialize(&conn_sign)?;
-        let mut body = Vec::new();
-        encode_len(140, &mut body);
-        body.extend(vec![0xaa; 140]);
-        body.extend(vec![0xbb; 17]);
-        verify_wire_body(&conn_sign, PACKET_TYPE_SERVER_COMPLETE, &encoded, &body);
-        assert_eq!(
-            Packet::deserialize(&encoded, Some(&conn_sign), Some(&packet_sign))?,
-            packet
-        );
+        assert_eq!(encoded[0], PACKET_TYPE_SERVER_COMPLETE);
+        assert_eq!(&encoded[1..], signature.as_slice());
+        assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
         Ok(())
     }
 
@@ -567,12 +549,12 @@ mod tests {
     #[test]
     fn packet_deserialize_rejects_truncated_server_complete() -> Result<()> {
         let conn_sign = ConnSign::new()?;
-        let packet_sign = PacketSign::new()?;
-        let body = [5, 1, 2, 3];
+        let mut signature = conn_sign.sign_detached(b"server-hello||client-hello")?;
+        signature.pop();
         let mut packet = vec![PACKET_TYPE_SERVER_COMPLETE];
-        packet.extend(conn_sign.sign(&body)?.0);
-        let err = Packet::deserialize(&packet, Some(&conn_sign), Some(&packet_sign)).unwrap_err();
-        assert!(err.to_string().contains("truncated"));
+        packet.extend(signature);
+        let err = Packet::deserialize(&packet, None, None).unwrap_err();
+        assert!(err.to_string().contains("signature length"));
         Ok(())
     }
 
