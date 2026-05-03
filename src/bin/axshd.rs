@@ -4,20 +4,55 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use axsh::{ConnSign, Packet, PacketSign, ServerHello, hdlc};
+use axsh::{ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, ServerHello, hdlc};
 
 async fn handle_connection(
     mut stream: TcpStream,
     conn_sign: Arc<ConnSign>,
     unique: u64,
 ) -> std::io::Result<()> {
-    let _packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
-    let packet = Packet::ServerHello(ServerHello::new(unique));
+    let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
+    let packet = Packet::ServerHello(ServerHello::new(
+        unique,
+        conn_sign
+            .public_key_bytes()
+            .map_err(std::io::Error::other)?,
+        packet_sign.public_key_bytes(),
+    ));
     let wire = packet
         .serialize(conn_sign.as_ref())
         .map_err(std::io::Error::other)?;
     let frame = hdlc::encode(&wire);
     stream.write_all(&frame).await?;
+
+    let frame = hdlc::read_frame(&mut stream).await?;
+    let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
+    let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+    match packet {
+        Packet::ClientHello(hello) => {
+            eprintln!(
+                "received ClientHello: server_unique={}, client_unique={}, conn_key={} bytes, packet_key={} bytes",
+                hello.server_unique(),
+                hello.unique(),
+                hello.conn_sign_public_key().len(),
+                hello.packet_sign_public_key().len()
+            );
+            if hello.server_unique() != unique {
+                return Err(std::io::Error::other(format!(
+                    "client echoed server_unique={} but expected {}",
+                    hello.server_unique(),
+                    unique
+                )));
+            }
+            let _client_conn_verify = ConnVerify::new(hello.conn_sign_public_key().to_vec());
+            let _client_packet_verify = PacketVerify::new(hello.packet_sign_public_key());
+        }
+        other => {
+            return Err(std::io::Error::other(format!(
+                "expected ClientHello, got {other:?}"
+            )));
+        }
+    }
     Ok(())
 }
 

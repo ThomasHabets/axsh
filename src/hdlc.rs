@@ -1,4 +1,5 @@
 use anyhow::{Result, bail, ensure};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 const FLAG: u8 = 0x7e;
 const ESCAPE: u8 = 0x7d;
@@ -46,6 +47,29 @@ pub fn decode(frame: &[u8]) -> Result<Vec<u8>> {
     let received_fcs = u16::from_le_bytes([unescaped[payload_len], unescaped[payload_len + 1]]);
     ensure!(frame_fcs(payload) == received_fcs, "frame FCS mismatch");
     Ok(payload.to_vec())
+}
+
+/// Read a single HDLC frame from an async byte stream.
+pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+    let mut frame = Vec::new();
+    let mut in_frame = false;
+
+    loop {
+        let byte = reader.read_u8().await?;
+        if !in_frame {
+            if byte == FLAG {
+                frame.clear();
+                frame.push(byte);
+                in_frame = true;
+            }
+            continue;
+        }
+
+        frame.push(byte);
+        if byte == FLAG {
+            return Ok(frame);
+        }
+    }
 }
 
 fn escape_into(bytes: &[u8], out: &mut Vec<u8>) {
