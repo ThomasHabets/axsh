@@ -6,6 +6,7 @@ use aws_lc_rs::{
     unstable::signature::{ML_DSA_44, ML_DSA_44_SIGNING, PqdsaKeyPair},
 };
 
+pub mod hdlc;
 mod packet;
 pub use packet::{ClientHello, Packet, ServerComplete, ServerHello, SignVerify, Signed};
 

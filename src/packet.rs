@@ -7,6 +7,13 @@ pub struct ServerHello {
     // TODO: public ed25519 key.
 }
 
+impl ServerHello {
+    /// Create a server hello with a connection-unique identifier.
+    pub fn new(unique: u64) -> Self {
+        Self { unique }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientHello {
     unique: u64,
@@ -14,10 +21,27 @@ pub struct ClientHello {
     // TODO: public ed25519 key.
 }
 
+impl ClientHello {
+    /// Create a client hello with a connection-unique identifier.
+    pub fn new(unique: u64) -> Self {
+        Self { unique }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerComplete {
     server_hello_bytes: Vec<u8>,
     client_hello_bytes: Vec<u8>,
+}
+
+impl ServerComplete {
+    /// Create a server-complete packet body from the two transcript fragments.
+    pub fn new(server_hello_bytes: Vec<u8>, client_hello_bytes: Vec<u8>) -> Self {
+        Self {
+            server_hello_bytes,
+            client_hello_bytes,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
