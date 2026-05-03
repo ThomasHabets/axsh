@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::sync::Arc;
 use tokio::{
     io::AsyncWriteExt,
@@ -13,6 +14,13 @@ use clap::Parser;
 struct Args {
     #[arg(short = 'k', long = "key", default_value = "axshd-conn-sign.pk8")]
     key_path: std::path::PathBuf,
+}
+
+fn random_u64() -> std::io::Result<u64> {
+    let mut bytes = [0u8; 8];
+    let mut file = File::open("/dev/urandom")?;
+    std::io::Read::read_exact(&mut file, &mut bytes)?;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 async fn handle_connection(
@@ -83,13 +91,11 @@ async fn handle_connection(
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
-    let mut next_unique = 1u64;
     let listener = TcpListener::bind("0.0.0.0:12345").await?;
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        let unique = next_unique;
-        next_unique += 1;
+        let unique = random_u64()?;
         let conn_sign = Arc::clone(&conn_sign);
 
         tokio::spawn(async move {
