@@ -1,6 +1,6 @@
 use axsh::{ClientStream, ConnSign};
 use clap::Parser;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser)]
 struct Args {
@@ -21,5 +21,15 @@ async fn main() -> std::io::Result<()> {
     let mut client = ClientStream::new(stream, conn_sign).await?;
     client.write_all(b"hello").await?;
     client.flush().await?;
+
+    loop {
+        let mut buf = [0u8; 1024];
+        let n = client.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let buf = &buf[..n];
+        print!("{}", String::from_utf8_lossy(&buf));
+    }
     Ok(())
 }

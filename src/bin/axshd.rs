@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
@@ -56,7 +56,14 @@ async fn handle_connection(
             eprintln!("Client disconnected");
             return Ok(());
         }
-        println!("Got data {:?}", &buf[..n]);
+        let buf = &buf[..n];
+        println!("Got data {:?}", buf);
+
+        // TODO: read only complete lines.
+        let s = String::from_utf8_lossy(buf);
+        println!("Writing {s}");
+        stream.write_all(format!("Server replying to <{s}>\n").as_bytes()).await?;
+        stream.flush().await?;
     }
 }
 
