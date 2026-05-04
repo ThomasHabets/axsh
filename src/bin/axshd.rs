@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use log::debug;
+use tokio::io::AsyncBufReadExt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -53,24 +54,21 @@ async fn handle_connection(
 ) -> std::io::Result<()> {
     let mut stream =
         ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
+    let (read, mut write) = tokio::io::split(stream);
     let mut buf = [0u8; 4096];
+    let mut linereader = tokio::io::BufReader::new(read).lines();
 
     loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            log::info!("client disconnected");
-            return Ok(());
-        }
-        let buf = &buf[..n];
-        debug!("Got data {:?}", buf);
-
-        // TODO: read only complete lines.
-        let s = String::from_utf8_lossy(buf);
-        stream
+        let Some(s) = linereader.next_line().await? else {
+            break;
+        };
+        write
             .write_all(format!("Server replying to <{s}>\n").as_bytes())
             .await?;
-        stream.flush().await?;
+        write.flush().await?;
     }
+    log::info!("client disconnected");
+    Ok(())
 }
 
 #[tokio::main]
