@@ -1,6 +1,7 @@
 // TODO: replace with thiserror.
 use anyhow::{Result, bail};
 use aws_lc_rs::{
+    digest,
     encoding::AsDer,
     signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
     unstable::signature::{ML_DSA_44, ML_DSA_44_SIGNING, PqdsaKeyPair},
@@ -69,6 +70,29 @@ pub fn parse_authorized_conn_key(line: &str) -> Result<Vec<u8>> {
         bail!("missing key data");
     }
     decode_base64(encoded)
+}
+
+/// Format one known-hosts line for a host and ConnSign public key.
+pub fn format_known_host(host: &str, public_key: &[u8]) -> String {
+    format!("{host} {}", format_authorized_conn_key(public_key))
+}
+
+/// Parse one known-hosts line into a host and ConnSign public key.
+pub fn parse_known_host(line: &str) -> Result<(String, Vec<u8>)> {
+    let (host, key) = line
+        .split_once(' ')
+        .ok_or_else(|| anyhow::anyhow!("missing host or key data"))?;
+    if host.is_empty() {
+        bail!("missing host");
+    }
+    Ok((host.to_string(), parse_authorized_conn_key(key)?))
+}
+
+/// Format a SHA-256 fingerprint string for bytes in OpenSSH style.
+pub fn format_sha256_fingerprint(data: &[u8]) -> String {
+    let digest = digest::digest(&digest::SHA256, data);
+    let encoded = encode_base64(digest.as_ref());
+    format!("SHA256:{}", encoded.trim_end_matches('='))
 }
 
 pub struct PacketSign {
@@ -323,6 +347,7 @@ impl SignVerify for ConnVerify {
     }
 }
 
+// Generate binary version of public key.
 fn encode_conn_public_key(
     ml_dsa_public_key_der: &[u8],
     ed25519_public_key: [u8; ED25519_PUBLIC_KEY_LEN],
@@ -397,7 +422,7 @@ fn decode_conn_private_key_bundle(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConnSign, SignVerify};
+    use super::{ConnSign, SignVerify, format_sha256_fingerprint};
     use aws_lc_rs::unstable::signature::ML_DSA_44_SIGNING;
 
     fn unique_test_path(name: &str) -> std::path::PathBuf {
@@ -453,5 +478,13 @@ mod tests {
         let mut ed25519_tampered = signer.sign(message).expect("failed to sign").0;
         ed25519_tampered[ml_dsa_sig_len] ^= 0x01;
         assert!(signer.verify(&super::Signed(ed25519_tampered)).is_none());
+    }
+
+    #[test]
+    fn sha256_fingerprint_matches_known_value() {
+        assert_eq!(
+            format_sha256_fingerprint(b"foo"),
+            "SHA256:LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564"
+        );
     }
 }

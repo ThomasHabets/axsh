@@ -15,8 +15,32 @@ pub struct ClientStream<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
-    /// Complete the client handshake over `stream`.
-    pub async fn new(mut stream: T, conn_sign: ConnSign) -> std::io::Result<Self> {
+    /// Complete the client handshake over `stream` after checking the server key.
+    pub async fn new(
+        stream: T,
+        conn_sign: ConnSign,
+        expected_server_conn_sign_public_key: &[u8],
+    ) -> std::io::Result<Self> {
+        Self::new_with_server_hello_validator(stream, conn_sign, |server_hello| {
+            if server_hello.conn_sign_public_key() != expected_server_conn_sign_public_key {
+                return Err(std::io::Error::other(
+                    "server ConnSign key does not match known-hosts entry",
+                ));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Complete the client handshake over `stream` after validating `ServerHello`.
+    pub async fn new_with_server_hello_validator<F>(
+        mut stream: T,
+        conn_sign: ConnSign,
+        validate_server_hello: F,
+    ) -> std::io::Result<Self>
+    where
+        F: FnOnce(&ServerHello) -> std::io::Result<()>,
+    {
         let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
 
         // Read ServerHello.
@@ -35,6 +59,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
             server_hello.conn_sign_public_key().len(),
             server_hello.packet_sign_public_key().len()
         );
+        validate_server_hello(&server_hello)?;
         // Set up verifiers from ServerHello.
         let server_conn_verify = ConnVerify::new(server_hello.conn_sign_public_key().to_vec());
         let server_packet_verify = PacketVerify::new(server_hello.packet_sign_public_key());
@@ -142,6 +167,9 @@ mod tests {
         let (server_stream, client_stream) = tokio::io::duplex(4096);
         let expected_payload = b"server payload".to_vec();
         let expected_payload_for_server = expected_payload.clone();
+        let expected_server_key = server_conn_sign
+            .public_key_bytes()
+            .map_err(std::io::Error::other)?;
 
         let server = tokio::spawn(async move {
             let mut server =
@@ -160,7 +188,8 @@ mod tests {
             Ok::<(), std::io::Error>(())
         });
 
-        let mut client = ClientStream::new(client_stream, client_conn_sign).await?;
+        let mut client =
+            ClientStream::new(client_stream, client_conn_sign, &expected_server_key).await?;
 
         let mut received = vec![0u8; expected_payload.len()];
         client.read_exact(&mut received).await?;
@@ -169,6 +198,42 @@ mod tests {
         client.write_all(b"client payload").await?;
         client.flush().await?;
         server.await.expect("server task panicked")?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_stream_rejects_unknown_server_key() -> std::io::Result<()> {
+        let server_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
+        let client_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
+        let wrong_server_key = ConnSign::new()
+            .and_then(|sign| sign.public_key_bytes())
+            .map_err(std::io::Error::other)?;
+        let authorized_keys = HashSet::from([client_conn_sign
+            .public_key_bytes()
+            .map_err(std::io::Error::other)?]);
+        let (server_stream, client_stream) = tokio::io::duplex(4096);
+
+        let server = tokio::spawn(async move {
+            ServerStream::new(server_stream, &server_conn_sign, &authorized_keys)
+                .await
+                .map(|_| ())
+        });
+
+        let err = match ClientStream::new(client_stream, client_conn_sign, &wrong_server_key).await
+        {
+            Ok(_) => panic!("client accepted unexpected server key"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("known-hosts"),
+            "unexpected error: {err}"
+        );
+
+        let server_result = server.await.expect("server task panicked");
+        assert!(
+            server_result.is_err(),
+            "server unexpectedly completed handshake"
+        );
         Ok(())
     }
 }

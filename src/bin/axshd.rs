@@ -214,8 +214,14 @@ mod tests {
         writer.await.expect("writer task panicked");
 
         let output = String::from_utf8(output).expect("output was not utf-8");
-        assert!(output.contains("out\n"), "missing stdout output: {output:?}");
-        assert!(output.contains("err\n"), "missing stderr output: {output:?}");
+        assert!(
+            output.contains("out\n"),
+            "missing stdout output: {output:?}"
+        );
+        assert!(
+            output.contains("err\n"),
+            "missing stderr output: {output:?}"
+        );
         assert!(
             output.contains(">>> Exit status 0\n"),
             "missing exit status output: {output:?}"
