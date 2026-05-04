@@ -1,12 +1,13 @@
 use std::collections::HashSet;
+use std::process::Stdio;
 use std::sync::Arc;
 
 use clap::Parser;
-use log::debug;
 use tokio::io::AsyncBufReadExt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    process::Command,
 };
 
 use axsh::{ConnSign, LogLevel, ServerStream, init_logging, parse_authorized_conn_key};
@@ -46,26 +47,81 @@ fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u
     Ok(keys)
 }
 
+/// Run one shell command line and stream its stdout and stderr to the client.
+async fn run_command_line<W: tokio::io::AsyncWrite + Unpin>(
+    write: &mut W,
+    command: &str,
+) -> std::io::Result<()> {
+    let mut child = Command::new("/bin/sh")
+        .arg("-lc")
+        .arg(command)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("child stdout was not captured"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("child stderr was not captured"))?;
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+    let mut stdout_buf = [0u8; 4096];
+    let mut stderr_buf = [0u8; 4096];
+
+    while stdout_open || stderr_open {
+        tokio::select! {
+            read_result = stdout.read(&mut stdout_buf), if stdout_open => {
+                let n = read_result?;
+                if n == 0 {
+                    stdout_open = false;
+                } else {
+                    write.write_all(&stdout_buf[..n]).await?;
+                    write.flush().await?;
+                }
+            }
+            read_result = stderr.read(&mut stderr_buf), if stderr_open => {
+                let n = read_result?;
+                if n == 0 {
+                    stderr_open = false;
+                } else {
+                    write.write_all(&stderr_buf[..n]).await?;
+                    write.flush().await?;
+                }
+            }
+        }
+    }
+
+    let status = child.wait().await?;
+    let exit_status = status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| format!("unknown ({status})"));
+    write
+        .write_all(format!(">>> Exit status {exit_status}\n").as_bytes())
+        .await?;
+    write.flush().await?;
+    Ok(())
+}
+
 /// Handle one connected client.
 async fn handle_connection(
     stream: TcpStream,
     conn_sign: Arc<ConnSign>,
     authorized_keys: Arc<HashSet<Vec<u8>>>,
 ) -> std::io::Result<()> {
-    let mut stream =
-        ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
+    let stream = ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
     let (read, mut write) = tokio::io::split(stream);
-    let mut buf = [0u8; 4096];
     let mut linereader = tokio::io::BufReader::new(read).lines();
 
     loop {
-        let Some(s) = linereader.next_line().await? else {
+        let Some(command) = linereader.next_line().await? else {
             break;
         };
-        write
-            .write_all(format!("Server replying to <{s}>\n").as_bytes())
-            .await?;
-        write.flush().await?;
+        log::info!("executing command from client: {command}");
+        run_command_line(&mut write, &command).await?;
     }
     log::info!("client disconnected");
     Ok(())
@@ -96,6 +152,7 @@ async fn main() -> std::io::Result<()> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use tokio::io::AsyncReadExt;
 
     // TODO: use a real temp file generator.
     fn unique_test_path(name: &str) -> std::path::PathBuf {
@@ -139,5 +196,29 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
         std::fs::remove_file(path).expect("failed to remove allowlist");
+    }
+
+    #[tokio::test]
+    async fn run_command_line_streams_output() {
+        let (mut read, mut write) = tokio::io::duplex(4096);
+        let writer = tokio::spawn(async move {
+            run_command_line(&mut write, "printf 'out\\n'; printf 'err\\n' >&2")
+                .await
+                .expect("command failed");
+        });
+
+        let mut output = Vec::new();
+        read.read_to_end(&mut output)
+            .await
+            .expect("failed to read command output");
+        writer.await.expect("writer task panicked");
+
+        let output = String::from_utf8(output).expect("output was not utf-8");
+        assert!(output.contains("out\n"), "missing stdout output: {output:?}");
+        assert!(output.contains("err\n"), "missing stderr output: {output:?}");
+        assert!(
+            output.contains(">>> Exit status 0\n"),
+            "missing exit status output: {output:?}"
+        );
     }
 }
