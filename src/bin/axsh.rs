@@ -171,8 +171,9 @@ async fn main() -> std::io::Result<()> {
             line_result = stdin.next_line(), if stdin_open => {
                 match line_result? {
                     Some(line) => {
-                        client.write_all(line.as_bytes()).await?;
-                        client.write_all(b"\n").await?;
+                        let mut buf = line.as_bytes().to_vec();
+                        buf.push(b'\n');
+                        client.write_all(&buf).await?;
                         client.flush().await?;
                     }
                     None => {
