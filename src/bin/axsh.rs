@@ -1,17 +1,27 @@
 use std::collections::HashMap;
+use std::str::FromStr;
+
+use log::debug;
+use agw::r#async::AGW;
+use clap::Parser;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use axsh::{
     CONN_AUTHORIZED_KEY_KIND, ClientStream, ConnSign, LogLevel, format_known_host,
     format_sha256_fingerprint, init_logging, parse_known_host,
 };
-use clap::Parser;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Parser)]
 struct Args {
     /// Address to connect to.
     #[arg()]
     addr: String,
+
+    #[arg(short)]
+    src: String,
+
+    #[arg(long)]
+    agw_addr: Option<String>,
 
     /// Private client key.
     #[arg(short = 'k', long = "key", default_value = "axsh-conn-sign.pk8")]
@@ -127,14 +137,39 @@ fn confirm_and_add_known_host(
     Ok(())
 }
 
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> AsyncReadWrite for T {}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
     init_logging(args.log_level).map_err(std::io::Error::other)?;
+
+    let agw;
+    let stream: Box<dyn AsyncReadWrite> = if let Some(agw_addr) = args.agw_addr {
+        agw = AGW::new(&agw_addr).await.map_err(std::io::Error::other)?;
+        let src = &agw::Call::from_str(&args.src).map_err(std::io::Error::other)?;
+        let dst = &agw::Call::from_str(&args.addr).map_err(std::io::Error::other)?;
+        Box::new(agw.connect(agw::Port(0), agw::Pid(0xF0), src, dst, &[]).await.map_err(std::io::Error::other)?)
+    } else {
+        Box::new(tokio::net::TcpStream::connect(&args.addr).await?)
+    };
+    debug!("Connected");
+    let mut stream = stream;
+    loop {
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).await?;
+        let buf = &buf[..n];
+        if buf.is_empty() {
+            return Ok(());
+        }
+        println!("{:?}", String::from_utf8_lossy(buf));
+    }
+
     let conn_sign = ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?;
     let known_hosts = load_known_hosts(&args.known_hosts_path)?;
     let expected_server_key = known_hosts.get(&args.addr).cloned();
-    let stream = tokio::net::TcpStream::connect(&args.addr).await?;
     let known_hosts_path = args.known_hosts_path.clone();
     let addr = args.addr.clone();
     let mut client =
