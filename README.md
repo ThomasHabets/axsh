@@ -15,6 +15,51 @@ and not some secret communication channel.
 
 And yet they cannot impersonate either side.
 
+## Usage
+
+### Generate keys
+
+```
+$ axsh-keygen server.key
+[…]
+$ axsh-keygen client.key
+[…]
+$ axsh-pubkey client.key > authorized_keys
+$ axsh-pubkey server.key | axsh-fingerprint /dev/stdin
+SHA256:LbGyurDlBczDLyrl23l20yiuEhpuUm1sjyC42y9FgyM
+```
+
+### Run server
+
+```
+$ axshd \
+    -k server.key \
+    -v trace \
+    -a authorized_keys \
+    --agw-addr 127.0.0.1:8010 \
+    -l M0QQQ-1
+```
+
+### Run client
+
+```
+$ axsh \
+    -k client.key \
+    -v info \
+    -s M0QQQ-2 \
+    --agw-addr 127.0.0.1:8000 \
+    M0QQQ-1
+[…]
+The authenticity of host 'M0QQQ-1' can't be established.
+mldsa-ed25519 key fingerprint is SHA256:LbGyurDlBczDLyrl23l20yiuEhpuUm1sjyC42y9FgyM
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'M0QQQ-1' (mldsa-ed25519) to the list of known hosts.
+[…]
+INFO Handshake successful
+echo hello world
+hello world
+```
+
 ## Security
 
 ### Authentication (who is the other side?)
