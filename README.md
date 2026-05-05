@@ -94,13 +94,13 @@ short.
 
 ### Replay
 
-Both sides of every connection create a random unique u64 that is part of every
-signature, preventing replay.
+Connection signing (in `ClientHello` and `ServerComplete`) are protected against
+replay using a random 64bit integer, so handshakes can't be replayed.
 
-TODO: actually, I never did implement that.
+Packet signatures use a connection packet counter to prevent replay and reorder
+within a connection. The counter is not sent, but is part of what is signed.
 
 ## TODO
 
 * Improve protocol by first sending a hash of the connsign key, in case the peer
   has it cached.
-* Add unique u64 to every signature.

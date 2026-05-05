@@ -165,8 +165,7 @@ mod tests {
             .public_key_bytes()
             .map_err(std::io::Error::other)?]);
         let (server_stream, client_stream) = tokio::io::duplex(4096);
-        let expected_payload = b"server payload".to_vec();
-        let expected_payload_for_server = expected_payload.clone();
+        let expected_server_payloads = [b"server payload one".as_slice(), b"server payload two"];
         let expected_server_key = server_conn_sign
             .public_key_bytes()
             .map_err(std::io::Error::other)?;
@@ -179,23 +178,35 @@ mod tests {
                 authorized_keys.iter().next().expect("missing key")
             );
 
-            server.write_all(&expected_payload_for_server).await?;
-            server.flush().await?;
+            for payload in expected_server_payloads {
+                server.write_all(payload).await?;
+                server.flush().await?;
+            }
 
-            let mut received = vec![0u8; b"client payload".len()];
+            let mut received = vec![0u8; b"client payload one".len()];
             server.read_exact(&mut received).await?;
-            assert_eq!(received, b"client payload");
+            assert_eq!(received, b"client payload one");
+
+            let mut received = vec![0u8; b"client payload two".len()];
+            server.read_exact(&mut received).await?;
+            assert_eq!(received, b"client payload two");
             Ok::<(), std::io::Error>(())
         });
 
         let mut client =
             ClientStream::new(client_stream, client_conn_sign, &expected_server_key).await?;
 
-        let mut received = vec![0u8; expected_payload.len()];
+        let mut received = vec![0u8; b"server payload one".len()];
         client.read_exact(&mut received).await?;
-        assert_eq!(received, expected_payload);
+        assert_eq!(received, b"server payload one");
 
-        client.write_all(b"client payload").await?;
+        let mut received = vec![0u8; b"server payload two".len()];
+        client.read_exact(&mut received).await?;
+        assert_eq!(received, b"server payload two");
+
+        client.write_all(b"client payload one").await?;
+        client.flush().await?;
+        client.write_all(b"client payload two").await?;
         client.flush().await?;
         server.await.expect("server task panicked")?;
         Ok(())

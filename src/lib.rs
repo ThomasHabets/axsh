@@ -1,4 +1,6 @@
 // TODO: replace with thiserror.
+use std::cell::Cell;
+
 use anyhow::{Result, bail};
 use aws_lc_rs::{
     digest,
@@ -95,15 +97,29 @@ pub fn format_sha256_fingerprint(data: &[u8]) -> String {
     format!("SHA256:{}", encoded.trim_end_matches('='))
 }
 
+/// Prefix the implicit payload packet counter to bytes for signing.
+fn packet_signature_input(counter: u64, data: &[u8]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(std::mem::size_of::<u64>() + data.len());
+    input.extend(counter.to_be_bytes());
+    input.extend(data);
+    input
+}
+
 pub struct PacketSign {
     key_pair: Ed25519KeyPair,
+    sign_counter: Cell<u64>,
+    verify_counter: Cell<u64>,
 }
 
 impl PacketSign {
     /// Generate a fresh Ed25519 keypair for payload packet signing.
     pub fn new() -> Result<Self> {
         let key_pair = Ed25519KeyPair::generate()?;
-        Ok(Self { key_pair })
+        Ok(Self {
+            key_pair,
+            sign_counter: Cell::new(0),
+            verify_counter: Cell::new(0),
+        })
     }
 
     /// Return the Ed25519 public key bytes for this signer.
@@ -117,26 +133,34 @@ impl PacketSign {
 }
 
 impl SignVerify for PacketSign {
-    /// Prepend the fixed-size Ed25519 signature to the message bytes.
+    /// Prepend the fixed-size Ed25519 signature over the next implicit counter and the message bytes.
     fn sign(&self, data: &[u8]) -> Result<Signed> {
-        let mut sig = self.key_pair.sign(data).as_ref().to_vec();
+        let counter = self.sign_counter.get();
+        let input = packet_signature_input(counter, data);
+        let mut sig = self.key_pair.sign(&input).as_ref().to_vec();
         assert_eq!(sig.len(), ED25519_SIGNATURE_LEN);
         sig.extend(data);
+        self.sign_counter.set(counter + 1);
         Ok(Signed(sig))
     }
 
-    /// Split the signature back off the wire bytes and verify it.
+    /// Split the signature back off the wire bytes and verify it with the next implicit counter.
     fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>> {
         if data.0.len() < ED25519_SIGNATURE_LEN {
             return None;
         }
         let alg = &ED25519;
         let (sig, msg) = data.0.split_at(ED25519_SIGNATURE_LEN);
+        let counter = self.verify_counter.get();
+        let input = packet_signature_input(counter, msg);
 
         let public_key = UnparsedPublicKey::new(alg, self.key_pair.public_key().as_ref());
         public_key
-            .verify(msg, sig.as_ref())
-            .map(|_| std::borrow::Cow::Borrowed(msg))
+            .verify(&input, sig.as_ref())
+            .map(|_| {
+                self.verify_counter.set(counter + 1);
+                std::borrow::Cow::Borrowed(msg)
+            })
             .ok()
     }
 }
@@ -272,12 +296,16 @@ impl SignVerify for ConnSign {
 
 pub struct PacketVerify {
     public_key: [u8; ED25519_PUBLIC_KEY_LEN],
+    verify_counter: Cell<u64>,
 }
 
 impl PacketVerify {
     /// Create an Ed25519 verifier from a public key.
     pub fn new(public_key: [u8; ED25519_PUBLIC_KEY_LEN]) -> Self {
-        Self { public_key }
+        Self {
+            public_key,
+            verify_counter: Cell::new(0),
+        }
     }
 }
 
@@ -287,16 +315,21 @@ impl SignVerify for PacketVerify {
         bail!("public-only Ed25519 verifier cannot sign")
     }
 
-    /// Verify signed bytes with the stored Ed25519 public key.
+    /// Verify signed bytes with the stored Ed25519 public key and the next implicit counter.
     fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>> {
         if data.0.len() < ED25519_SIGNATURE_LEN {
             return None;
         }
         let (sig, msg) = data.0.split_at(ED25519_SIGNATURE_LEN);
+        let counter = self.verify_counter.get();
+        let input = packet_signature_input(counter, msg);
         let public_key = UnparsedPublicKey::new(&ED25519, self.public_key);
         public_key
-            .verify(msg, sig.as_ref())
-            .map(|_| std::borrow::Cow::Borrowed(msg))
+            .verify(&input, sig.as_ref())
+            .map(|_| {
+                self.verify_counter.set(counter + 1);
+                std::borrow::Cow::Borrowed(msg)
+            })
             .ok()
     }
 }

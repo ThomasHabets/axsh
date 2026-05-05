@@ -418,12 +418,11 @@ mod tests {
         ))
     }
 
-    /// Verify that the encoded body is signed correctly and recover the
-    /// expected plaintext bytes.
-    fn verify_wire_body(signer: &dyn SignVerify, packet_type: u8, encoded: &[u8], body: &[u8]) {
+    /// Verify that the encoded body is signed correctly and recover the expected plaintext bytes.
+    fn verify_wire_body(verifier: &dyn SignVerify, packet_type: u8, encoded: &[u8], body: &[u8]) {
         assert_eq!(encoded[0], packet_type);
         let signed = Signed(encoded[1..].to_vec());
-        let verified = signer.verify(&signed).unwrap();
+        let verified = verifier.verify(&signed).unwrap();
         assert_eq!(verified.as_ref(), body);
     }
 
@@ -510,16 +509,21 @@ mod tests {
     #[test]
     fn packet_round_trip_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
+        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
         let packet = Packet::Payload(vec![1, 2, 3, 4, 5]);
         let encoded = packet.serialize(&packet_sign)?;
         verify_wire_body(
-            &packet_sign,
+            &packet_verify,
             PACKET_TYPE_PAYLOAD,
             &encoded,
             &[1, 2, 3, 4, 5],
         );
         assert_eq!(
-            Packet::deserialize(&encoded, None, Some(&packet_sign))?,
+            Packet::deserialize(
+                &encoded,
+                None,
+                Some(&PacketVerify::new(packet_sign.public_key_bytes()))
+            )?,
             packet
         );
         Ok(())
@@ -575,6 +579,39 @@ mod tests {
         let encoded = Packet::Payload(vec![1, 2, 3]).serialize(&packet_sign)?;
         let err = Packet::deserialize(&encoded, None, None).unwrap_err();
         assert!(err.to_string().contains("missing packet verifier"));
+        Ok(())
+    }
+
+    #[test]
+    fn packet_deserialize_rejects_replayed_payload() -> Result<()> {
+        let packet_sign = PacketSign::new()?;
+        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
+        let encoded = Packet::Payload(vec![1, 2, 3]).serialize(&packet_sign)?;
+
+        assert_eq!(
+            Packet::deserialize(&encoded, None, Some(&packet_verify))?,
+            Packet::Payload(vec![1, 2, 3])
+        );
+
+        let err = Packet::deserialize(&encoded, None, Some(&packet_verify)).unwrap_err();
+        assert!(err.to_string().contains("signature verification failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn packet_deserialize_rejects_out_of_order_payload() -> Result<()> {
+        let packet_sign = PacketSign::new()?;
+        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
+        let first = Packet::Payload(vec![1]).serialize(&packet_sign)?;
+        let second = Packet::Payload(vec![2]).serialize(&packet_sign)?;
+
+        let err = Packet::deserialize(&second, None, Some(&packet_verify)).unwrap_err();
+        assert!(err.to_string().contains("signature verification failed"));
+
+        assert_eq!(
+            Packet::deserialize(&first, None, Some(&packet_verify))?,
+            Packet::Payload(vec![1])
+        );
         Ok(())
     }
 
