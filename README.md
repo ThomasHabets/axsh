@@ -19,7 +19,7 @@ And yet they cannot impersonate either side.
 
 ### Generate keys
 
-```
+```shell
 $ axsh-keygen server.key
 […]
 $ axsh-keygen client.key
@@ -31,7 +31,7 @@ SHA256:LbGyurDlBczDLyrl23l20yiuEhpuUm1sjyC42y9FgyM
 
 ### Run server
 
-```
+```shell
 $ axshd \
     -k server.key \
     -v trace \
@@ -42,7 +42,7 @@ $ axshd \
 
 ### Run client
 
-```
+```shell
 $ axsh \
     -k client.key \
     -v info \
@@ -99,6 +99,18 @@ replay using a random 64bit integer, so handshakes can't be replayed.
 
 Packet signatures use a counter to prevent replay and reorder within a
 connection. The counter is not sent, but is part of what is signed.
+
+## Testing
+
+For local testing it's easier and faster to run over TCP. This is done by
+running `axsh` and `axshd` without `--agw-addr`.
+
+```shell
+$ axshd -k server.key -a authorized_keys
+
+# and in another terminal:
+$ axsh -k client.key -s M0QQQ-1 localhost:12345
+```
 
 ## TODO
 
