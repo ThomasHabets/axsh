@@ -69,6 +69,7 @@ impl AsyncFrameReader {
 }
 
 /// Encode a payload into an HDLC frame with byte-stuffing and a CRC-16 FCS.
+#[must_use]
 pub fn encode(payload: &[u8]) -> Vec<u8> {
     let fcs = frame_fcs(payload);
     let mut framed = Vec::with_capacity(payload.len() + 4);

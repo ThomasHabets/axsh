@@ -50,10 +50,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
             return Poll::Ready(Ok(()));
         }
 
-        if self.read_offset == self.read_buffer.len() {
-            if !ready!(self.poll_fill_read_buffer(cx))? {
-                return Poll::Ready(Ok(()));
-            }
+        if self.read_offset == self.read_buffer.len() && !ready!(self.poll_fill_read_buffer(cx))? {
+            return Poll::Ready(Ok(()));
         }
 
         let available = self.read_buffer.len() - self.read_offset;

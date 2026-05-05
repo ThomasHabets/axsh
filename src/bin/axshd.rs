@@ -106,8 +106,7 @@ async fn run_command_line<W: tokio::io::AsyncWrite + Unpin>(
     let status = child.wait().await?;
     let exit_status = status
         .code()
-        .map(|code| code.to_string())
-        .unwrap_or_else(|| format!("unknown ({status})"));
+        .map_or_else(|| format!("unknown ({status})"), |code| code.to_string());
     write
         .write_all(format!(">>> Exit status {exit_status}\n").as_bytes())
         .await?;

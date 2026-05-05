@@ -1,3 +1,7 @@
+#![allow(clippy::similar_names)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+
 // TODO: replace with thiserror.
 use std::cell::Cell;
 
@@ -36,6 +40,7 @@ pub enum LogLevel {
     Trace,
 }
 
+#[must_use]
 pub(crate) fn conn_signature_len() -> usize {
     ML_DSA_44_SIGNING.signature_len() + ED25519_SIGNATURE_LEN
 }
@@ -55,12 +60,13 @@ pub fn init_logging(level: LogLevel) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to initialize logging: {e}"))
 }
 
-/// Format a ConnSign public key for authorized-keys files.
+/// Format a `ConnSign` public key for authorized-keys files.
+#[must_use]
 pub fn format_authorized_conn_key(public_key: &[u8]) -> String {
     format!("{CONN_AUTHORIZED_KEY_KIND} {}", encode_base64(public_key))
 }
 
-/// Parse one authorized-keys line for a ConnSign public key.
+/// Parse one authorized-keys line for a `ConnSign` public key.
 pub fn parse_authorized_conn_key(line: &str) -> Result<Vec<u8>> {
     let (kind, encoded) = line
         .split_once(' ')
@@ -74,12 +80,13 @@ pub fn parse_authorized_conn_key(line: &str) -> Result<Vec<u8>> {
     decode_base64(encoded)
 }
 
-/// Format one known-hosts line for a host and ConnSign public key.
+/// Format one known-hosts line for a host and `ConnSign` public key.
+#[must_use]
 pub fn format_known_host(host: &str, public_key: &[u8]) -> String {
     format!("{host} {}", format_authorized_conn_key(public_key))
 }
 
-/// Parse one known-hosts line into a host and ConnSign public key.
+/// Parse one known-hosts line into a host and `ConnSign` public key.
 pub fn parse_known_host(line: &str) -> Result<(String, Vec<u8>)> {
     let (host, key) = line
         .split_once(' ')
@@ -91,6 +98,7 @@ pub fn parse_known_host(line: &str) -> Result<(String, Vec<u8>)> {
 }
 
 /// Format a SHA-256 fingerprint string for bytes in OpenSSH style.
+#[must_use]
 pub fn format_sha256_fingerprint(data: &[u8]) -> String {
     let digest = digest::digest(&digest::SHA256, data);
     let encoded = encode_base64(digest.as_ref());
@@ -98,6 +106,7 @@ pub fn format_sha256_fingerprint(data: &[u8]) -> String {
 }
 
 /// Prefix the implicit payload packet counter to bytes for signing.
+#[must_use]
 fn packet_signature_input(counter: u64, data: &[u8]) -> Vec<u8> {
     let mut input = Vec::with_capacity(std::mem::size_of::<u64>() + data.len());
     input.extend(counter.to_be_bytes());
@@ -123,6 +132,7 @@ impl PacketSign {
     }
 
     /// Return the Ed25519 public key bytes for this signer.
+    #[must_use]
     pub fn public_key_bytes(&self) -> [u8; ED25519_PUBLIC_KEY_LEN] {
         self.key_pair
             .public_key()
@@ -157,7 +167,7 @@ impl SignVerify for PacketSign {
         let public_key = UnparsedPublicKey::new(alg, self.key_pair.public_key().as_ref());
         public_key
             .verify(&input, sig.as_ref())
-            .map(|_| {
+            .map(|()| {
                 self.verify_counter.set(counter + 1);
                 std::borrow::Cow::Borrowed(msg)
             })
@@ -173,7 +183,7 @@ pub struct ConnSign {
 }
 
 impl ConnSign {
-    /// Generate a fresh ConnSign key with independent ML-DSA and Ed25519 signing keys.
+    /// Generate a fresh `ConnSign` key with independent ML-DSA and Ed25519 signing keys.
     pub fn new() -> Result<Self> {
         let alg = &ML_DSA_44_SIGNING;
         let ml_dsa_key_pair = PqdsaKeyPair::generate(alg)?;
@@ -188,7 +198,7 @@ impl ConnSign {
         })
     }
 
-    /// Load a ConnSign key bundle from raw bytes.
+    /// Load a `ConnSign` key bundle from raw bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (ml_dsa_pkcs8, ed25519_pkcs8) = decode_conn_private_key_bundle(bytes)?;
         let alg = &ML_DSA_44_SIGNING;
@@ -202,7 +212,7 @@ impl ConnSign {
         })
     }
 
-    /// Load a ConnSign key from a file.
+    /// Load a `ConnSign` key from a file.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(&bytes)
@@ -233,7 +243,7 @@ impl ConnSign {
         Ok(signed.0[..conn_signature_len()].to_vec())
     }
 
-    /// Write the ConnSign private key bundle to a file.
+    /// Write the `ConnSign` private key bundle to a file.
     pub fn write_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
         let path = path.as_ref();
         let bundle = encode_conn_private_key_bundle(&self.ml_dsa_pkcs8, &self.ed25519_pkcs8)?;
@@ -301,6 +311,7 @@ pub struct PacketVerify {
 
 impl PacketVerify {
     /// Create an Ed25519 verifier from a public key.
+    #[must_use]
     pub fn new(public_key: [u8; ED25519_PUBLIC_KEY_LEN]) -> Self {
         Self {
             public_key,
@@ -326,7 +337,7 @@ impl SignVerify for PacketVerify {
         let public_key = UnparsedPublicKey::new(&ED25519, self.public_key);
         public_key
             .verify(&input, sig.as_ref())
-            .map(|_| {
+            .map(|()| {
                 self.verify_counter.set(counter + 1);
                 std::borrow::Cow::Borrowed(msg)
             })
@@ -339,12 +350,14 @@ pub struct ConnVerify {
 }
 
 impl ConnVerify {
-    /// Create a ConnSign verifier from bundled ML-DSA and Ed25519 public key bytes.
+    /// Create a `ConnSign` verifier from bundled ML-DSA and Ed25519 public key bytes.
+    #[must_use]
     pub fn new(public_key_bundle: Vec<u8>) -> Self {
         Self { public_key_bundle }
     }
 
     /// Verify a detached ML-DSA+Ed25519 signature bundle against `data`.
+    #[must_use]
     pub fn verify_detached(&self, signature: &[u8], data: &[u8]) -> bool {
         let mut signed = signature.to_vec();
         signed.extend(data);
@@ -353,7 +366,7 @@ impl ConnVerify {
 }
 
 impl SignVerify for ConnVerify {
-    /// Reject signing attempts for public-only ConnSign verifiers.
+    /// Reject signing attempts for public-only `ConnSign` verifiers.
     fn sign(&self, _data: &[u8]) -> Result<Signed> {
         bail!("public-only ConnSign verifier cannot sign")
     }

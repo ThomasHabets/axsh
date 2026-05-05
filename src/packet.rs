@@ -11,6 +11,7 @@ pub struct ServerHello {
 
 impl ServerHello {
     /// Create a server hello with a connection-unique identifier and public keys.
+    #[must_use]
     pub fn new(
         unique: u64,
         conn_sign_public_key: Vec<u8>,
@@ -24,16 +25,19 @@ impl ServerHello {
     }
 
     /// Return the server's connection-unique identifier.
+    #[must_use]
     pub fn unique(&self) -> u64 {
         self.unique
     }
 
-    /// Return the server's bundled ConnSign public key bytes.
+    /// Return the server's bundled `ConnSign` public key bytes.
+    #[must_use]
     pub fn conn_sign_public_key(&self) -> &[u8] {
         &self.conn_sign_public_key
     }
 
     /// Return the server's Ed25519 public key bytes.
+    #[must_use]
     pub fn packet_sign_public_key(&self) -> [u8; ED25519_PUBLIC_KEY_LEN] {
         self.packet_sign_public_key
     }
@@ -49,6 +53,7 @@ pub struct ClientHello {
 
 impl ClientHello {
     /// Create a client hello with both hello challenges and public keys.
+    #[must_use]
     pub fn new(
         server_unique: u64,
         unique: u64,
@@ -64,21 +69,25 @@ impl ClientHello {
     }
 
     /// Return the echoed server challenge.
+    #[must_use]
     pub fn server_unique(&self) -> u64 {
         self.server_unique
     }
 
     /// Return the client's fresh challenge value.
+    #[must_use]
     pub fn unique(&self) -> u64 {
         self.unique
     }
 
-    /// Return the client's bundled ConnSign public key bytes.
+    /// Return the client's bundled `ConnSign` public key bytes.
+    #[must_use]
     pub fn conn_sign_public_key(&self) -> &[u8] {
         &self.conn_sign_public_key
     }
 
     /// Return the client's Ed25519 public key bytes.
+    #[must_use]
     pub fn packet_sign_public_key(&self) -> [u8; ED25519_PUBLIC_KEY_LEN] {
         self.packet_sign_public_key
     }
@@ -91,11 +100,13 @@ pub struct ServerComplete {
 
 impl ServerComplete {
     /// Create a server-complete packet body from a detached transcript signature.
+    #[must_use]
     pub fn new(signature: Vec<u8>) -> Self {
         Self { signature }
     }
 
     /// Return the detached server transcript signature.
+    #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.signature
     }
@@ -235,6 +246,7 @@ fn signed_message(data: &[u8], signature_len: usize) -> Result<&[u8]> {
 }
 
 /// Encode a server hello body with the server challenge and both public keys.
+#[must_use]
 fn encode_server_hello(hello: &ServerHello) -> Vec<u8> {
     let mut out = Vec::with_capacity(
         std::mem::size_of::<u64>()
@@ -263,6 +275,7 @@ fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
 }
 
 /// Encode a client hello body with both challenges and both public keys.
+#[must_use]
 fn encode_client_hello(hello: &ClientHello) -> Vec<u8> {
     let mut out = Vec::with_capacity(
         2 * std::mem::size_of::<u64>()
@@ -351,7 +364,7 @@ fn take_len_prefixed(data: &[u8]) -> Result<(Vec<u8>, &[u8])> {
 fn encode_len(len: usize, out: &mut Vec<u8>) {
     let mut value = len;
     loop {
-        let mut byte = (value & 0x7f) as u8;
+        let mut byte = u8::try_from(value & 0x7f).expect("impossible");
         value >>= 7;
         if value != 0 {
             byte |= 0x80;
@@ -370,7 +383,7 @@ fn decode_len(data: &[u8]) -> Result<(usize, &[u8])> {
     for (idx, byte) in data.iter().copied().enumerate() {
         let chunk = usize::from(byte & 0x7f);
         let shifted = chunk
-            .checked_shl(shift as u32)
+            .checked_shl(u32::try_from(shift)?)
             .ok_or_else(|| anyhow!("length varint overflow"))?;
         value = value
             .checked_add(shifted)
@@ -387,6 +400,7 @@ fn decode_len(data: &[u8]) -> Result<(usize, &[u8])> {
 }
 
 /// Calculate the encoded varint size so serialization can reserve once.
+#[must_use]
 const fn len_varint_len(mut len: usize) -> usize {
     let mut out = 1;
     while len >= 0x80 {

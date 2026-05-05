@@ -14,6 +14,7 @@ fn decode_char(byte: u8) -> Result<u8> {
     }
 }
 
+#[must_use]
 pub fn encode_base64(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
@@ -39,7 +40,10 @@ pub fn encode_base64(data: &[u8]) -> String {
 }
 
 pub fn decode_base64(data: &str) -> Result<Vec<u8>> {
-    ensure!(data.len() % 4 == 0, "base64 length must be a multiple of 4");
+    ensure!(
+        data.len().is_multiple_of(4),
+        "base64 length must be a multiple of 4"
+    );
 
     let bytes = data.as_bytes();
     let mut out = Vec::with_capacity((bytes.len() / 4) * 3);

@@ -213,18 +213,15 @@ async fn main() -> std::io::Result<()> {
                 print!("{}", String::from_utf8_lossy(&buf[..n]));
             }
             line_result = stdin.next_line(), if stdin_open => {
-                match line_result? {
-                    Some(line) => {
+                if let Some(line) = line_result? {
                         let mut buf = line.as_bytes().to_vec();
                         buf.push(b'\n');
                         client.write_all(&buf).await?;
                         client.flush().await?;
-                    }
-                    None => {
+                    } else {
                         stdin_open = false;
                         client.shutdown().await?;
                         client.flush().await?;
-                    }
                 }
             }
         }
