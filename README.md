@@ -69,14 +69,14 @@ is who you think it is, both with today's ed25519, and protected against quantum
 computers with ML-DSA.
 
 ML-DSA has two drawbacks:
-1. Keys and signatures are really big. Not suitable for speeds like AX.25
-   standard 1200bps. Handshakes take a few seconds.
+1. Keys and signatures are really big. Not suitable for signing every packet at
+   speeds like AX.25 standard 1200bps. Handshakes therefore take a few seconds.
 2. Its core cryptographic primitive is less battle tested. Someone could find a
-   flaw. That's what the ed25519 is for.
+   flaw. That's what the ed25519 is there to protect against.
 
 Authentication is broken if ML-DSA is broken (e.g. by smarter people) AND
-ed25519 is broken by a quantum computer. If either happens, we can change it out
-and still be protected by the other algorithm.
+ed25519 is broken by a quantum computer. If either happens, we can switch it out
+and still be protected by the other algorithm until we've changed it.
 
 ### Hijack
 
@@ -94,11 +94,11 @@ short.
 
 ### Replay
 
-Connection signing (in `ClientHello` and `ServerComplete`) are protected against
+Connection signing (in `ClientHello` and `ServerComplete`) is protected against
 replay using a random 64bit integer, so handshakes can't be replayed.
 
-Packet signatures use a connection packet counter to prevent replay and reorder
-within a connection. The counter is not sent, but is part of what is signed.
+Packet signatures use a counter to prevent replay and reorder within a
+connection. The counter is not sent, but is part of what is signed.
 
 ## TODO
 
