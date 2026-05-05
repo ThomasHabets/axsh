@@ -1,12 +1,15 @@
 use std::collections::HashSet;
 use std::process::Stdio;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use agw::r#async::AGW;
 use clap::Parser;
+use log::info;
 use tokio::io::AsyncBufReadExt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     process::Command,
 };
 
@@ -14,6 +17,12 @@ use axsh::{ConnSign, LogLevel, ServerStream, init_logging, parse_authorized_conn
 
 #[derive(Parser)]
 struct Args {
+    #[arg(long)]
+    agw_addr: Option<String>,
+
+    #[arg(short, long)]
+    listen: Option<String>,
+
     /// File containing server private key.
     #[arg(short = 'k', long = "key", default_value = "axshd-conn-sign.pk8")]
     key_path: std::path::PathBuf,
@@ -108,7 +117,7 @@ async fn run_command_line<W: tokio::io::AsyncWrite + Unpin>(
 
 /// Handle one connected client.
 async fn handle_connection(
-    stream: TcpStream,
+    stream: impl AsyncReadWrite,
     conn_sign: Arc<ConnSign>,
     authorized_keys: Arc<HashSet<Vec<u8>>>,
 ) -> std::io::Result<()> {
@@ -127,24 +136,64 @@ async fn handle_connection(
     Ok(())
 }
 
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
     init_logging(args.log_level).map_err(std::io::Error::other)?;
     let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
     let authorized_keys = Arc::new(load_authorized_keys(&args.authorized_keys_path)?);
-    let listener = TcpListener::bind("0.0.0.0:12345").await?;
 
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let conn_sign = Arc::clone(&conn_sign);
-        let authorized_keys = Arc::clone(&authorized_keys);
+    if let Some(agw_addr) = args.agw_addr {
+        let Some(my_addr) = args.listen else { panic!() };
+        let agw = AGW::new(&agw_addr).await.map_err(std::io::Error::other)?;
+        let my_addr = &agw::Call::from_str(&my_addr).map_err(std::io::Error::other)?;
+        let mut listener = agw
+            .listen(agw::Port(0), my_addr)
+            .await
+            .map_err(std::io::Error::other)?;
+        loop {
+            let mut stream = listener.accept().await.unwrap();
+            let addr = stream.dst().clone();
+            info!("Got connection from {addr}");
+            if false {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                stream.write_all(b"Hello from server\n").await?;
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                stream.shutdown().await?;
+                loop {
+                    let mut buf = [0u8; 1024];
+                    let n = stream.read(&mut buf).await?;
+                    let buf = &buf[..n];
+                    if buf.is_empty() {
+                        return Ok(());
+                    }
+                    println!("{:?}", String::from_utf8_lossy(buf));
+                }
+            }
+            let conn_sign = Arc::clone(&conn_sign);
+            let authorized_keys = Arc::clone(&authorized_keys);
 
-        tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, conn_sign, authorized_keys).await {
                 log::error!("connection {addr} error: {e}");
             }
-        });
+        }
+    } else {
+        let listener = TcpListener::bind("0.0.0.0:12345").await?;
+        loop {
+            let (stream, addr) = listener.accept().await?;
+            let conn_sign = Arc::clone(&conn_sign);
+            let authorized_keys = Arc::clone(&authorized_keys);
+
+            tokio::spawn(async move {
+                if let Err(e) = handle_connection(stream, conn_sign, authorized_keys).await {
+                    log::error!("connection {addr} error: {e}");
+                }
+            });
+        }
     }
 }
 
