@@ -159,7 +159,7 @@ async fn main() -> std::io::Result<()> {
             let addr = stream.dst().clone();
             info!("Got connection from {addr}");
             if false {
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 stream.write_all(b"Hello from server\n").await?;
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 stream.shutdown().await?;
