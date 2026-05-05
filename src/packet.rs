@@ -557,11 +557,10 @@ mod tests {
     }
 
     #[test]
-    fn packet_deserialize_rejects_truncated_hello() -> Result<()> {
+    fn packet_deserialize_rejects_truncated_hello() {
         let err =
             Packet::deserialize(&[PACKET_TYPE_SERVER_HELLO, 1, 2, 3], None, None).unwrap_err();
         assert!(err.to_string().contains("expected at least 8 bytes"));
-        Ok(())
     }
 
     #[test]

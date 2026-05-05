@@ -230,10 +230,9 @@ mod tests {
                 .map(|_| ())
         });
 
-        let err = match ClientStream::new(client_stream, client_conn_sign, &wrong_server_key).await
-        {
-            Ok(_) => panic!("client accepted unexpected server key"),
-            Err(err) => err,
+        let Err(err) = ClientStream::new(client_stream, client_conn_sign, &wrong_server_key).await
+        else {
+            panic!("client accepted unexpected server key")
         };
         assert!(
             err.to_string().contains("known-hosts"),
