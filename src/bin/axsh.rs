@@ -228,6 +228,9 @@ async fn main() -> std::io::Result<()> {
     }
     client.shutdown().await?;
     client.flush().await?;
+    // Direwolf seems to need a bit of time before exiting, or it won't send a
+    // `DISC`.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     Ok(())
 }
 

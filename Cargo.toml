@@ -11,6 +11,7 @@ keywords = ["radio"]
 
 [dependencies]
 agw = "0.4.0"
+#agw = { path = "../agw" }
 anyhow = "1.0.102"
 aws-lc-rs = { version = "1.16.3", features = ["unstable"] }
 clap = { version = "4.6.1", features = ["derive"] }
