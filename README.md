@@ -111,8 +111,3 @@ $ axshd -k server.key -a authorized_keys
 # and in another terminal:
 $ axsh -k client.key -s M0QQQ-1 localhost:12345
 ```
-
-## TODO
-
-* Improve protocol by first sending a hash of the connsign key, in case the peer
-  has it cached.
