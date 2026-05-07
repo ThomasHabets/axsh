@@ -22,11 +22,14 @@ mod server;
 mod transport;
 pub use base64::{decode_base64, encode_base64};
 pub use client::ClientStream;
-pub use packet::{ClientHello, Packet, ServerComplete, ServerHello, SignVerify, Signed};
+pub use packet::{
+    ClientHello, Packet, ServerComplete, ServerHello, ServerPubkey, SignVerify, Signed,
+};
 pub use server::ServerStream;
 
 pub(crate) const ED25519_SIGNATURE_LEN: usize = 64;
 pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
+pub const SHA256_DIGEST_LEN: usize = 32;
 const CONN_PUBLIC_KEY_VERSION: u8 = 1;
 const CONN_PRIVATE_KEY_MAGIC: &[u8; 8] = b"AXSHCK02";
 pub const CONN_AUTHORIZED_KEY_KIND: &str = "mldsa-ed25519";
@@ -97,12 +100,26 @@ pub fn parse_known_host(line: &str) -> Result<(String, Vec<u8>)> {
     Ok((host.to_string(), parse_authorized_conn_key(key)?))
 }
 
-/// Format a SHA-256 fingerprint string for bytes in OpenSSH style.
+/// Fingerprint a blob and format the bytes in OpenSSH style.
 #[must_use]
 pub fn format_sha256_fingerprint(data: &[u8]) -> String {
-    let digest = digest::digest(&digest::SHA256, data);
-    let encoded = encode_base64(digest.as_ref());
+    format_sha256_digest(&sha256_bytes(data))
+}
+
+/// Format a SHA-256 digest in OpenSSH fingerprint style.
+#[must_use]
+pub fn format_sha256_digest(digest: &[u8; SHA256_DIGEST_LEN]) -> String {
+    let encoded = encode_base64(digest);
     format!("SHA256:{}", encoded.trim_end_matches('='))
+}
+
+/// Calculate the SHA-256 digest for bytes.
+#[must_use]
+pub fn sha256_bytes(data: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
+    digest::digest(&digest::SHA256, data)
+        .as_ref()
+        .try_into()
+        .expect("unexpected SHA-256 digest length")
 }
 
 /// Prefix the implicit payload packet counter to bytes for signing.

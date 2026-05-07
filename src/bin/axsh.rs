@@ -7,8 +7,8 @@ use log::{debug, info};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use axsh::{
-    CONN_AUTHORIZED_KEY_KIND, ClientStream, ConnSign, LogLevel, format_known_host,
-    format_sha256_fingerprint, init_logging, parse_known_host,
+    CONN_AUTHORIZED_KEY_KIND, ClientStream, ConnSign, LogLevel, ServerHello, format_known_host,
+    format_sha256_digest, format_sha256_fingerprint, init_logging, parse_known_host,
 };
 
 #[derive(Parser)]
@@ -174,30 +174,34 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    let conn_sign = ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?;
-    let known_hosts = load_known_hosts(&args.known_hosts_path)?;
-    let expected_server_key = known_hosts.get(&args.addr).cloned();
-    let known_hosts_path = args.known_hosts_path.clone();
-    let addr = args.addr.clone();
     info!("Handshaking…");
-    let mut client =
-        ClientStream::new_with_server_hello_validator(stream, conn_sign, move |server_hello| {
-            if let Some(expected_server_key) = expected_server_key.as_deref() {
-                if server_hello.conn_sign_public_key() != expected_server_key {
-                    return Err(std::io::Error::other(format!(
-                        "server ConnSign key does not match known-hosts entry (presented {})",
-                        format_sha256_fingerprint(server_hello.conn_sign_public_key())
-                    )));
+    let mut client = {
+        let addr = args.addr.clone();
+        let conn_sign = ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?;
+        let known_hosts = load_known_hosts(&args.known_hosts_path)?;
+        let known_hosts_path = args.known_hosts_path.clone();
+        let expected_server_key = known_hosts.get(&args.addr).cloned();
+        let is_known_host = expected_server_key.is_some();
+        ClientStream::new_with_server_pubkey_lookup(
+            stream,
+            conn_sign,
+            move |_server_hello| Ok(expected_server_key),
+            move |server_hello: &ServerHello, server_public_key| {
+                debug!(
+                    "Verifying ServerPubkey: server_unique={}, conn_key={}",
+                    server_hello.unique(),
+                    format_sha256_digest(&server_hello.conn_sign_public_key_sha256())
+                );
+                if is_known_host {
+                    // Already checked and in `known_hosts`.
+                    Ok(())
+                } else {
+                    confirm_and_add_known_host(&known_hosts_path, &addr, server_public_key)
                 }
-                return Ok(());
-            }
-            confirm_and_add_known_host(
-                &known_hosts_path,
-                &addr,
-                server_hello.conn_sign_public_key(),
-            )
-        })
-        .await?;
+            },
+        )
+    }
+    .await?;
     info!("Handshake successful");
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let mut stdin_open = true;
