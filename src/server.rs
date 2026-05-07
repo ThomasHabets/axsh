@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -6,8 +6,11 @@ use log::debug;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::{
-    ClientHello, ConnSign, Packet, PacketSign, PacketVerify, ServerComplete, ServerHello,
-    ServerPubkey, hdlc, random_u64, sha256_bytes, transport::PayloadStream,
+    ClientHello, ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, SHA256_DIGEST_LEN,
+    ServerComplete, ServerHello, ServerPubkey, format_sha256_digest, hdlc,
+    packet::{PACKET_TYPE_CLIENT_HELLO, PACKET_TYPE_REQUEST_SERVER_PUBKEY},
+    random_u64, sha256_bytes,
+    transport::PayloadStream,
 };
 
 /// Wrap an async byte stream with the server handshake and payload packet transport.
@@ -21,7 +24,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
     pub async fn new(
         mut stream: T,
         conn_sign: &ConnSign,
-        authorized_keys: &HashSet<Vec<u8>>,
+        authorized_keys: &HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>,
     ) -> std::io::Result<Self> {
         let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
         let unique = random_u64()?;
@@ -44,9 +47,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
         let (client_hello_wire, client_hello) = loop {
             let frame = hdlc::read_frame_async(&mut stream).await?;
             let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-            let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
-            match packet {
-                Packet::RequestServerPubkey => {
+            match Packet::peek_type(&wire).map_err(std::io::Error::other)? {
+                PACKET_TYPE_REQUEST_SERVER_PUBKEY => {
+                    let packet =
+                        Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+                    let Packet::RequestServerPubkey = packet else {
+                        unreachable!("packet type and parsed packet disagreed")
+                    };
                     debug!("axsh: Server pubkey requested");
                     let packet =
                         Packet::ServerPubkey(ServerPubkey::new(conn_sign_public_key.clone()));
@@ -54,19 +61,35 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                     stream.write_all(&hdlc::encode(&wire)).await?;
                     stream.flush().await?;
                 }
-                Packet::ClientHello(client_hello) => break (wire, client_hello),
+                PACKET_TYPE_CLIENT_HELLO => {
+                    let peeked = Packet::peek_client_hello(&wire).map_err(std::io::Error::other)?;
+                    let Some(client_conn_sign_public_key) =
+                        authorized_keys.get(&peeked.conn_sign_public_key_sha256())
+                    else {
+                        return Err(std::io::Error::other(
+                            "client ConnSign key is not authorized",
+                        ));
+                    };
+                    let client_conn_verify = ConnVerify::new(client_conn_sign_public_key.clone());
+                    let packet = Packet::deserialize(&wire, Some(&client_conn_verify), None)
+                        .map_err(std::io::Error::other)?;
+                    let Packet::ClientHello(client_hello) = packet else {
+                        unreachable!("packet type and parsed packet disagreed")
+                    };
+                    break (wire, client_hello);
+                }
                 other => {
                     return Err(std::io::Error::other(format!(
-                        "expected RequestServerPubkey or ClientHello, got {other:?}"
+                        "expected RequestServerPubkey or ClientHello, got packet type {other}"
                     )));
                 }
             }
         };
         debug!(
-            "axsh: received ClientHello: server_unique={}, client_unique={}, conn_key={} bytes, packet_key={} bytes",
+            "axsh: received ClientHello: server_unique={}, client_unique={}, conn_key={}, packet_key={} bytes",
             client_hello.server_unique(),
             client_hello.unique(),
-            client_hello.conn_sign_public_key().len(),
+            format_sha256_digest(&client_hello.conn_sign_public_key_sha256()),
             client_hello.packet_sign_public_key().len()
         );
         if client_hello.server_unique() != unique {
@@ -75,11 +98,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                 client_hello.server_unique(),
                 unique
             )));
-        }
-        if !authorized_keys.contains(client_hello.conn_sign_public_key()) {
-            return Err(std::io::Error::other(
-                "client ConnSign key is not authorized",
-            ));
         }
         let client_packet_verify = PacketVerify::new(client_hello.packet_sign_public_key());
 

@@ -1,12 +1,12 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use log::debug;
 
-use crate::{ConnVerify, ED25519_PUBLIC_KEY_LEN, SHA256_DIGEST_LEN, conn_signature_len};
+use crate::{ED25519_PUBLIC_KEY_LEN, SHA256_DIGEST_LEN, conn_signature_len};
 
 const PACKET_TYPE_SERVER_HELLO: u8 = 0;
-const PACKET_TYPE_REQUEST_SERVER_PUBKEY: u8 = 1;
+pub(crate) const PACKET_TYPE_REQUEST_SERVER_PUBKEY: u8 = 1;
 const PACKET_TYPE_SERVER_PUBKEY: u8 = 2;
-const PACKET_TYPE_CLIENT_HELLO: u8 = 3;
+pub(crate) const PACKET_TYPE_CLIENT_HELLO: u8 = 3;
 const PACKET_TYPE_SERVER_COMPLETE: u8 = 4;
 const PACKET_TYPE_PAYLOAD: u8 = 5;
 
@@ -76,23 +76,23 @@ impl ServerPubkey {
 pub struct ClientHello {
     server_unique: u64,
     unique: u64,
-    conn_sign_public_key: Vec<u8>,
+    conn_sign_public_key_sha256: [u8; SHA256_DIGEST_LEN],
     packet_sign_public_key: [u8; ED25519_PUBLIC_KEY_LEN],
 }
 
 impl ClientHello {
-    /// Create a client hello with both hello challenges and public keys.
+    /// Create a client hello with both hello challenges, a client key digest, and a packet key.
     #[must_use]
     pub fn new(
         server_unique: u64,
         unique: u64,
-        conn_sign_public_key: Vec<u8>,
+        conn_sign_public_key_sha256: [u8; SHA256_DIGEST_LEN],
         packet_sign_public_key: [u8; ED25519_PUBLIC_KEY_LEN],
     ) -> Self {
         Self {
             server_unique,
             unique,
-            conn_sign_public_key,
+            conn_sign_public_key_sha256,
             packet_sign_public_key,
         }
     }
@@ -109,10 +109,10 @@ impl ClientHello {
         self.unique
     }
 
-    /// Return the client's bundled `ConnSign` public key bytes.
+    /// Return the SHA-256 digest of the client's bundled `ConnSign` public key bytes.
     #[must_use]
-    pub fn conn_sign_public_key(&self) -> &[u8] {
-        &self.conn_sign_public_key
+    pub fn conn_sign_public_key_sha256(&self) -> [u8; SHA256_DIGEST_LEN] {
+        self.conn_sign_public_key_sha256
     }
 
     /// Return the client's Ed25519 public key bytes.
@@ -227,7 +227,7 @@ impl Packet {
     /// packet does not carry its own verification key.
     pub fn deserialize(
         data: &[u8],
-        _conn_verifier: Option<&dyn SignVerify>,
+        conn_verifier: Option<&dyn SignVerify>,
         packet_verifier: Option<&dyn SignVerify>,
     ) -> Result<Self> {
         let (&packet_type, rest) = data
@@ -241,10 +241,9 @@ impl Packet {
             }
             PACKET_TYPE_SERVER_PUBKEY => Ok(Packet::ServerPubkey(decode_server_pubkey(rest)?)),
             PACKET_TYPE_CLIENT_HELLO => {
-                let body = signed_message(rest, conn_signature_len())?;
-                let hello = decode_client_hello(body)?;
-                let verifier = ConnVerify::new(hello.conn_sign_public_key().to_vec());
-                verify_signed(rest, &verifier)?;
+                let hello = Self::peek_client_hello(data)?;
+                let verifier = conn_verifier.ok_or_else(|| anyhow!("missing conn verifier"))?;
+                verify_signed(rest, verifier)?;
                 Ok(Packet::ClientHello(hello))
             }
             PACKET_TYPE_SERVER_COMPLETE => {
@@ -256,6 +255,26 @@ impl Packet {
             }
             other => bail!("unknown packet type {other}"),
         }
+    }
+
+    /// Parse a `ClientHello` from wire bytes without verifying its signature.
+    pub(crate) fn peek_client_hello(data: &[u8]) -> Result<ClientHello> {
+        let (&packet_type, rest) = data
+            .split_first()
+            .ok_or_else(|| anyhow!("packet is empty"))?;
+        ensure!(
+            packet_type == PACKET_TYPE_CLIENT_HELLO,
+            "expected ClientHello, got packet type {packet_type}"
+        );
+        let body = signed_message(rest, conn_signature_len())?;
+        decode_client_hello(body)
+    }
+
+    /// Return the packet type byte from wire bytes.
+    pub(crate) fn peek_type(data: &[u8]) -> Result<u8> {
+        data.first()
+            .copied()
+            .ok_or_else(|| anyhow!("packet is empty"))
     }
 }
 
@@ -338,15 +357,11 @@ fn decode_server_pubkey(data: &[u8]) -> Result<ServerPubkey> {
 #[must_use]
 fn encode_client_hello(hello: &ClientHello) -> Vec<u8> {
     let mut out = Vec::with_capacity(
-        2 * std::mem::size_of::<u64>()
-            + len_varint_len(hello.conn_sign_public_key.len())
-            + hello.conn_sign_public_key.len()
-            + ED25519_PUBLIC_KEY_LEN,
+        2 * std::mem::size_of::<u64>() + SHA256_DIGEST_LEN + ED25519_PUBLIC_KEY_LEN,
     );
     out.extend(hello.server_unique.to_be_bytes());
     out.extend(hello.unique.to_be_bytes());
-    encode_len(hello.conn_sign_public_key.len(), &mut out);
-    out.extend(&hello.conn_sign_public_key);
+    out.extend(hello.conn_sign_public_key_sha256);
     out.extend(hello.packet_sign_public_key);
     out
 }
@@ -355,13 +370,13 @@ fn encode_client_hello(hello: &ClientHello) -> Vec<u8> {
 fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
     let (server_unique, rest) = take_u64(data)?;
     let (unique, rest) = take_u64(rest)?;
-    let (conn_sign_public_key, rest) = take_len_prefixed(rest)?;
+    let (conn_sign_public_key_sha256, rest) = take_fixed::<SHA256_DIGEST_LEN>(rest)?;
     let (packet_sign_public_key, rest) = take_fixed::<ED25519_PUBLIC_KEY_LEN>(rest)?;
     ensure!(rest.is_empty(), "client hello has trailing bytes");
     Ok(ClientHello::new(
         server_unique,
         unique,
-        conn_sign_public_key,
+        conn_sign_public_key_sha256,
         packet_sign_public_key,
     ))
 }
@@ -487,10 +502,11 @@ mod tests {
     }
 
     fn test_client_hello(conn_sign: &ConnSign, packet_sign: &PacketSign) -> Result<ClientHello> {
+        let conn_sign_public_key = conn_sign.public_key_bytes()?;
         Ok(ClientHello::new(
             0xfeed_face_cafe_babe,
             0x0123_4567_89ab_cdef,
-            conn_sign.public_key_bytes()?,
+            sha256_bytes(&conn_sign_public_key),
             packet_sign.public_key_bytes(),
         ))
     }
@@ -578,6 +594,7 @@ mod tests {
     fn packet_round_trip_client_hello() -> Result<()> {
         let conn_sign = ConnSign::new()?;
         let packet_sign = PacketSign::new()?;
+        let conn_verify = ConnVerify::new(conn_sign.public_key_bytes()?);
         let hello = test_client_hello(&conn_sign, &packet_sign)?;
         let packet = Packet::ClientHello(hello.clone());
         let encoded = packet.serialize(&conn_sign)?;
@@ -587,7 +604,10 @@ mod tests {
             &encoded,
             &encode_client_hello(&hello),
         );
-        assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
+        assert_eq!(
+            Packet::deserialize(&encoded, Some(&conn_verify), None)?,
+            packet
+        );
         Ok(())
     }
 

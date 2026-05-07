@@ -127,14 +127,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
 
         // Generate packet signing keypair for client.
         let packet_sign = PacketSign::new().map_err(std::io::Error::other)?;
+        let client_conn_sign_public_key = conn_sign
+            .public_key_bytes()
+            .map_err(std::io::Error::other)?;
 
         // Reply with ClientHello.
         let packet = Packet::ClientHello(ClientHello::new(
             server_hello.unique(),
             random_u64()?,
-            conn_sign
-                .public_key_bytes()
-                .map_err(std::io::Error::other)?,
+            sha256_bytes(&client_conn_sign_public_key),
             packet_sign.public_key_bytes(),
         ));
         let client_hello_wire = packet
@@ -217,21 +218,29 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncWrite for ClientStream<T> {
 #[cfg(test)]
 mod tests {
     use super::ClientStream;
-    use crate::{ConnSign, ServerStream};
-    use std::collections::HashSet;
+    use crate::{ConnSign, ServerStream, sha256_bytes};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn authorized_keys(conn_sign: &ConnSign) -> std::io::Result<HashMap<[u8; 32], Vec<u8>>> {
+        let public_key = conn_sign
+            .public_key_bytes()
+            .map_err(std::io::Error::other)?;
+        Ok(HashMap::from([(sha256_bytes(&public_key), public_key)]))
+    }
 
     #[tokio::test]
     async fn client_and_server_streams_handshake_and_transport_payloads() -> std::io::Result<()> {
         let server_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
         let client_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
-        let authorized_keys = HashSet::from([client_conn_sign
-            .public_key_bytes()
-            .map_err(std::io::Error::other)?]);
+        let authorized_keys = authorized_keys(&client_conn_sign)?;
         let (server_stream, client_stream) = tokio::io::duplex(4096);
         let expected_server_payloads = [b"server payload one".as_slice(), b"server payload two"];
         let expected_server_key = server_conn_sign
+            .public_key_bytes()
+            .map_err(std::io::Error::other)?;
+        let expected_client_key = client_conn_sign
             .public_key_bytes()
             .map_err(std::io::Error::other)?;
 
@@ -239,8 +248,8 @@ mod tests {
             let mut server =
                 ServerStream::new(server_stream, &server_conn_sign, &authorized_keys).await?;
             assert_eq!(
-                server.client_hello().conn_sign_public_key(),
-                authorized_keys.iter().next().expect("missing key")
+                server.client_hello().conn_sign_public_key_sha256(),
+                sha256_bytes(&expected_client_key)
             );
 
             for payload in expected_server_payloads {
@@ -293,9 +302,7 @@ mod tests {
     async fn client_stream_rejects_unknown_server_key() -> std::io::Result<()> {
         let server_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
         let client_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
-        let authorized_keys = HashSet::from([client_conn_sign
-            .public_key_bytes()
-            .map_err(std::io::Error::other)?]);
+        let authorized_keys = authorized_keys(&client_conn_sign)?;
         let (server_stream, client_stream) = tokio::io::duplex(4096);
 
         let server = tokio::spawn(async move {
@@ -340,9 +347,7 @@ mod tests {
             .public_key_bytes()
             .map_err(std::io::Error::other)?;
         let client_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
-        let authorized_keys = HashSet::from([client_conn_sign
-            .public_key_bytes()
-            .map_err(std::io::Error::other)?]);
+        let authorized_keys = authorized_keys(&client_conn_sign)?;
         let (server_stream, client_stream) = tokio::io::duplex(4096);
         let seen_server_key = Arc::new(Mutex::new(None));
         let seen_server_key_for_client = Arc::clone(&seen_server_key);

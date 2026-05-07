@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -13,7 +13,10 @@ use tokio::{
     process::Command,
 };
 
-use axsh::{ConnSign, LogLevel, ServerStream, init_logging, parse_authorized_conn_key};
+use axsh::{
+    ConnSign, LogLevel, SHA256_DIGEST_LEN, ServerStream, init_logging, parse_authorized_conn_key,
+    sha256_bytes,
+};
 
 #[derive(Parser)]
 struct Args {
@@ -37,9 +40,11 @@ struct Args {
 }
 
 /// Load authorized keys from file. One typed pubkey per line.
-fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u8>>> {
+fn load_authorized_keys(
+    path: &std::path::Path,
+) -> std::io::Result<HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>> {
     let contents = std::fs::read_to_string(path)?;
-    let mut keys = HashSet::new();
+    let mut keys = HashMap::new();
     for (lineno, line) in contents.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
@@ -51,7 +56,17 @@ fn load_authorized_keys(path: &std::path::Path) -> std::io::Result<HashSet<Vec<u
                 format!("{}:{}: {e}", path.display(), lineno + 1),
             )
         })?;
-        keys.insert(key);
+        let digest = sha256_bytes(&key);
+        if keys.insert(digest, key).is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{}:{}: duplicate authorized key digest",
+                    path.display(),
+                    lineno + 1
+                ),
+            ));
+        }
     }
     Ok(keys)
 }
@@ -118,7 +133,7 @@ async fn run_command_line<W: tokio::io::AsyncWrite + Unpin>(
 async fn handle_connection(
     stream: impl AsyncReadWrite,
     conn_sign: Arc<ConnSign>,
-    authorized_keys: Arc<HashSet<Vec<u8>>>,
+    authorized_keys: Arc<HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>>,
 ) -> std::io::Result<()> {
     let stream = ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
     let (read, mut write) = tokio::io::split(stream);
@@ -199,7 +214,6 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use tokio::io::AsyncReadExt;
 
     // TODO: use a real temp file generator.
@@ -218,7 +232,10 @@ mod tests {
             .expect("failed to write allowlist");
 
         let keys = load_authorized_keys(&path).expect("failed to load allowlist");
-        let expected = HashSet::from([b"f".to_vec(), b"foo".to_vec()]);
+        let expected = HashMap::from([
+            (sha256_bytes(b"f"), b"f".to_vec()),
+            (sha256_bytes(b"foo"), b"foo".to_vec()),
+        ]);
         assert_eq!(keys, expected);
 
         std::fs::remove_file(path).expect("failed to remove allowlist");
@@ -241,6 +258,18 @@ mod tests {
         std::fs::write(&path, "ed25519 Zg==\n").expect("failed to write allowlist");
 
         let err = load_authorized_keys(&path).expect_err("loaded wrong key type");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        std::fs::remove_file(path).expect("failed to remove allowlist");
+    }
+
+    #[test]
+    fn load_authorized_keys_rejects_duplicate_digest() {
+        let path = unique_test_path("duplicate-authorized");
+        std::fs::write(&path, "mldsa-ed25519 Zg==\nmldsa-ed25519 Zg==\n")
+            .expect("failed to write allowlist");
+
+        let err = load_authorized_keys(&path).expect_err("loaded duplicate allowlist");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
         std::fs::remove_file(path).expect("failed to remove allowlist");
