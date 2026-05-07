@@ -77,7 +77,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
 
         let packet = Packet::Payload(buf.to_vec());
         let wire = packet
-            .serialize(&self.packet_sign)
+            .serialize_packet_signed(&self.packet_sign)
             .map_err(std::io::Error::other)?;
         self.write_buffer = hdlc::encode(&wire);
         self.write_offset = 0;

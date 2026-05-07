@@ -91,7 +91,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
 
             // Request public key.
             let request = Packet::RequestServerPubkey
-                .serialize(&conn_sign)
+                .serialize_unsigned()
                 .map_err(std::io::Error::other)?;
             debug!(
                 "axsh: Sending RequestServerPubkey ({} bytes)",
@@ -144,7 +144,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
             packet_sign.public_key_bytes(),
         ));
         let client_hello_wire = packet
-            .serialize(&conn_sign)
+            .serialize_conn_signed(&conn_sign)
             .map_err(std::io::Error::other)?;
         debug!(
             "axsh: Sending ClientHello ({} bytes)",

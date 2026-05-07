@@ -39,7 +39,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
             conn_sign_public_key_sha256,
             packet_sign.public_key_bytes(),
         ));
-        let server_hello_wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
+        let server_hello_wire = packet.serialize_unsigned().map_err(std::io::Error::other)?;
         debug!(
             "axsh: Received ServerHello ({} bytes)",
             server_hello_wire.len()
@@ -60,7 +60,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                     };
                     debug!("axsh: Received RequestServerPubkey ({} bytes)", wire.len());
                     let packet = Packet::ServerPubkey(ServerPubkey(conn_sign_public_key.clone()));
-                    let wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
+                    let wire = packet.serialize_unsigned().map_err(std::io::Error::other)?;
                     debug!("axsh: Sending ServerPubkey ({} bytes)", wire.len());
                     stream.write_all(&hdlc::encode(&wire)).await?;
                     stream.flush().await?;
@@ -114,7 +114,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                 .sign_detached(&transcript)
                 .map_err(std::io::Error::other)?,
         ));
-        let wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
+        let wire = packet.serialize_unsigned().map_err(std::io::Error::other)?;
         debug!("axsh: Sending ServerComplete ({} bytes)", wire.len());
         stream.write_all(&hdlc::encode(&wire)).await?;
         stream.flush().await?;

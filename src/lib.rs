@@ -22,9 +22,7 @@ mod server;
 mod transport;
 pub use base64::{decode_base64, encode_base64};
 pub use client::ClientStream;
-pub use packet::{
-    ClientHello, Packet, ServerComplete, ServerHello, ServerPubkey, SignVerify, Signed,
-};
+pub use packet::{ClientHello, Packet, ServerComplete, ServerHello, ServerPubkey};
 pub use server::ServerStream;
 
 pub(crate) const ED25519_SIGNATURE_LEN: usize = 64;
@@ -134,7 +132,6 @@ fn packet_signature_input(counter: u64, data: &[u8]) -> Vec<u8> {
 pub struct PacketSign {
     key_pair: Ed25519KeyPair,
     sign_counter: Cell<u64>,
-    verify_counter: Cell<u64>,
 }
 
 impl PacketSign {
@@ -144,7 +141,6 @@ impl PacketSign {
         Ok(Self {
             key_pair,
             sign_counter: Cell::new(0),
-            verify_counter: Cell::new(0),
         })
     }
 
@@ -157,38 +153,22 @@ impl PacketSign {
             .try_into()
             .expect("unexpected Ed25519 public key length")
     }
-}
 
-impl SignVerify for PacketSign {
-    /// Prepend the fixed-size Ed25519 signature over the next implicit counter and the message bytes.
-    fn sign(&self, data: &[u8]) -> Result<Signed> {
+    /// Sign bytes with the next implicit payload counter and prepend the Ed25519 signature.
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
         let counter = self.sign_counter.get();
         let input = packet_signature_input(counter, data);
         let mut sig = self.key_pair.sign(&input).as_ref().to_vec();
         assert_eq!(sig.len(), ED25519_SIGNATURE_LEN);
         sig.extend(data);
         self.sign_counter.set(counter + 1);
-        Ok(Signed(sig))
+        Ok(sig)
     }
 
-    /// Split the signature back off the wire bytes and verify it with the next implicit counter.
-    fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>> {
-        if data.0.len() < ED25519_SIGNATURE_LEN {
-            return None;
-        }
-        let alg = &ED25519;
-        let (sig, msg) = data.0.split_at(ED25519_SIGNATURE_LEN);
-        let counter = self.verify_counter.get();
-        let input = packet_signature_input(counter, msg);
-
-        let public_key = UnparsedPublicKey::new(alg, self.key_pair.public_key().as_ref());
-        public_key
-            .verify(&input, sig.as_ref())
-            .map(|()| {
-                self.verify_counter.set(counter + 1);
-                std::borrow::Cow::Borrowed(msg)
-            })
-            .ok()
+    /// Create a public-only verifier from this signer's public key.
+    #[must_use]
+    pub fn verifier(&self) -> PacketVerify {
+        PacketVerify::new(self.public_key_bytes())
     }
 }
 
@@ -257,7 +237,7 @@ impl ConnSign {
     /// Produce a detached ML-DSA+Ed25519 signature bundle for `data`.
     pub fn sign_detached(&self, data: &[u8]) -> Result<Vec<u8>> {
         let signed = self.sign(data)?;
-        Ok(signed.0[..conn_signature_len()].to_vec())
+        Ok(signed[..conn_signature_len()].to_vec())
     }
 
     /// Write the `ConnSign` private key bundle to a file.
@@ -276,11 +256,9 @@ impl ConnSign {
         std::io::Write::write_all(&mut file, &bundle)?;
         Ok(())
     }
-}
 
-impl SignVerify for ConnSign {
-    /// Prepend the fixed-size ML-DSA and Ed25519 signatures to the message bytes.
-    fn sign(&self, data: &[u8]) -> Result<Signed> {
+    /// Sign bytes and prepend the fixed-size ML-DSA and Ed25519 signatures.
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
         let alg = &ML_DSA_44_SIGNING;
         let mut ml_dsa_sig = vec![0u8; alg.signature_len()];
         let n = self.ml_dsa_key_pair.sign(data, &mut ml_dsa_sig)?;
@@ -293,31 +271,12 @@ impl SignVerify for ConnSign {
         sig.extend(ml_dsa_sig);
         sig.extend(ed25519_sig.as_ref());
         sig.extend(data);
-        Ok(Signed(sig))
+        Ok(sig)
     }
 
-    /// Split the signature bundle back off the wire bytes and verify it.
-    fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>> {
-        let ml_dsa_sig_len = ML_DSA_44_SIGNING.signature_len();
-        let total_sig_len = conn_signature_len();
-        if data.0.len() < total_sig_len {
-            return None;
-        }
-        let (sig, msg) = data.0.split_at(total_sig_len);
-        let (ml_dsa_sig, ed25519_sig) = sig.split_at(ml_dsa_sig_len);
-
-        let ml_dsa_public_key_der = self
-            .ml_dsa_key_pair
-            .public_key()
-            .as_der()
-            .expect("failed to get public key");
-        let ml_dsa_public_key = UnparsedPublicKey::new(&ML_DSA_44, ml_dsa_public_key_der.as_ref());
-        ml_dsa_public_key.verify(msg, ml_dsa_sig).ok()?;
-
-        let ed25519_public_key =
-            UnparsedPublicKey::new(&ED25519, self.ed25519_key_pair.public_key().as_ref());
-        ed25519_public_key.verify(msg, ed25519_sig).ok()?;
-        Some(std::borrow::Cow::Borrowed(msg))
+    /// Create a public-only verifier from this signer's public key bundle.
+    pub fn verifier(&self) -> Result<ConnVerify> {
+        Ok(ConnVerify::new(self.public_key_bytes()?))
     }
 }
 
@@ -335,20 +294,13 @@ impl PacketVerify {
             verify_counter: Cell::new(0),
         }
     }
-}
-
-impl SignVerify for PacketVerify {
-    /// Reject signing attempts for public-only Ed25519 verifiers.
-    fn sign(&self, _data: &[u8]) -> Result<Signed> {
-        bail!("public-only Ed25519 verifier cannot sign")
-    }
 
     /// Verify signed bytes with the stored Ed25519 public key and the next implicit counter.
-    fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>> {
-        if data.0.len() < ED25519_SIGNATURE_LEN {
+    pub fn verify<'a>(&self, data: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
+        if data.len() < ED25519_SIGNATURE_LEN {
             return None;
         }
-        let (sig, msg) = data.0.split_at(ED25519_SIGNATURE_LEN);
+        let (sig, msg) = data.split_at(ED25519_SIGNATURE_LEN);
         let counter = self.verify_counter.get();
         let input = packet_signature_input(counter, msg);
         let public_key = UnparsedPublicKey::new(&ED25519, self.public_key);
@@ -378,26 +330,20 @@ impl ConnVerify {
     pub fn verify_detached(&self, signature: &[u8], data: &[u8]) -> bool {
         let mut signed = signature.to_vec();
         signed.extend(data);
-        self.verify(&Signed(signed)).is_some()
-    }
-}
-
-impl SignVerify for ConnVerify {
-    /// Reject signing attempts for public-only `ConnSign` verifiers.
-    fn sign(&self, _data: &[u8]) -> Result<Signed> {
-        bail!("public-only ConnSign verifier cannot sign")
+        self.verify(&signed).is_some()
     }
 
     /// Verify signed bytes with the stored ML-DSA and Ed25519 public keys.
-    fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>> {
+    #[must_use]
+    pub fn verify<'a>(&self, data: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
         let (ml_dsa_public_key_der, ed25519_public_key) =
             decode_conn_public_key(&self.public_key_bundle).ok()?;
         let ml_dsa_sig_len = ML_DSA_44_SIGNING.signature_len();
         let total_sig_len = conn_signature_len();
-        if data.0.len() < total_sig_len {
+        if data.len() < total_sig_len {
             return None;
         }
-        let (sig, msg) = data.0.split_at(total_sig_len);
+        let (sig, msg) = data.split_at(total_sig_len);
         let (ml_dsa_sig, ed25519_sig) = sig.split_at(ml_dsa_sig_len);
 
         let ml_dsa_public_key =
@@ -485,7 +431,7 @@ fn decode_conn_private_key_bundle(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConnSign, SignVerify, format_sha256_fingerprint};
+    use super::{ConnSign, format_sha256_fingerprint};
     use aws_lc_rs::unstable::signature::ML_DSA_44_SIGNING;
 
     fn unique_test_path(name: &str) -> std::path::PathBuf {
@@ -522,7 +468,8 @@ mod tests {
 
         let message = b"round-trip";
         let signed = loaded.sign(message).expect("failed to sign");
-        let verified = original.verify(&signed).expect("failed to verify");
+        let verifier = original.verifier().expect("failed to build verifier");
+        let verified = verifier.verify(&signed).expect("failed to verify");
         assert_eq!(verified.as_ref(), message);
 
         std::fs::remove_file(path).expect("failed to remove temp key file");
@@ -531,16 +478,17 @@ mod tests {
     #[test]
     fn connsign_requires_both_signature_algorithms() {
         let signer = ConnSign::new().expect("failed to generate signer");
+        let verifier = signer.verifier().expect("failed to build verifier");
         let message = b"dual-signature";
         let ml_dsa_sig_len = ML_DSA_44_SIGNING.signature_len();
 
-        let mut ml_dsa_tampered = signer.sign(message).expect("failed to sign").0;
+        let mut ml_dsa_tampered = signer.sign(message).expect("failed to sign");
         ml_dsa_tampered[0] ^= 0x01;
-        assert!(signer.verify(&super::Signed(ml_dsa_tampered)).is_none());
+        assert!(verifier.verify(&ml_dsa_tampered).is_none());
 
-        let mut ed25519_tampered = signer.sign(message).expect("failed to sign").0;
+        let mut ed25519_tampered = signer.sign(message).expect("failed to sign");
         ed25519_tampered[ml_dsa_sig_len] ^= 0x01;
-        assert!(signer.verify(&super::Signed(ed25519_tampered)).is_none());
+        assert!(verifier.verify(&ed25519_tampered).is_none());
     }
 
     #[test]

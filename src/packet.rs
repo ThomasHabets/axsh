@@ -1,7 +1,9 @@
 use anyhow::{Result, anyhow, bail, ensure};
-use log::debug;
 
-use crate::{ED25519_PUBLIC_KEY_LEN, SHA256_DIGEST_LEN, conn_signature_len};
+use crate::{
+    ConnSign, ConnVerify, ED25519_PUBLIC_KEY_LEN, PacketSign, PacketVerify, SHA256_DIGEST_LEN,
+    conn_signature_len,
+};
 
 const PACKET_TYPE_SERVER_HELLO: u8 = 0;
 pub(crate) const PACKET_TYPE_REQUEST_SERVER_PUBKEY: u8 = 1;
@@ -152,28 +154,15 @@ pub enum Packet {
     Payload(Vec<u8>),
 }
 
-/// Signed wire bytes: signature material first, followed by the original
-/// message.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Signed(pub(crate) Vec<u8>);
-
-/// Packet serialization uses this abstraction so handshake packets and payload
-/// packets can be signed with different key types.
-pub trait SignVerify {
-    /// Produce signed wire bytes for `data`.
-    fn sign(&self, data: &[u8]) -> Result<Signed>;
-
-    /// Verify signed wire bytes and return the recovered message.
-    fn verify<'a>(&self, data: &'a Signed) -> Option<std::borrow::Cow<'a, [u8]>>;
-}
-
 impl Packet {
-    /// Serialize a packet into the wire format.
+    /// Serialize an unsigned packet into the wire format.
     ///
-    /// `ServerHello` is emitted unsigned. `ServerComplete` carries only a
-    /// detached transcript signature. `ClientHello` and `Payload` sign only
-    /// the bytes after the packet type byte.
-    pub fn serialize(&self, signer: &dyn SignVerify) -> Result<Vec<u8>> {
+    /// `ServerHello`, `RequestServerPubkey`, `ServerPubkey`, and
+    /// `ServerComplete` are emitted unsigned.
+    ///
+    /// `ServerComplete` contains a signature, but its byte contents are not
+    /// signed.
+    pub fn serialize_unsigned(&self) -> Result<Vec<u8>> {
         match self {
             Packet::ServerHello(hello) => {
                 let body = encode_server_hello(hello);
@@ -184,15 +173,10 @@ impl Packet {
             }
             Packet::RequestServerPubkey => Ok(vec![PACKET_TYPE_REQUEST_SERVER_PUBKEY]),
             Packet::ServerPubkey(server_pubkey) => {
-                debug!("ENcoding server pubkey");
                 let mut out = Vec::with_capacity(1 + server_pubkey.0.len());
                 out.push(PACKET_TYPE_SERVER_PUBKEY);
                 out.extend(&server_pubkey.0);
                 Ok(out)
-            }
-            Packet::ClientHello(hello) => {
-                let body = encode_client_hello(hello);
-                serialize_signed(PACKET_TYPE_CLIENT_HELLO, &body, signer)
             }
             Packet::ServerComplete(complete) => {
                 let mut out = Vec::with_capacity(1 + complete.signature.len());
@@ -200,7 +184,27 @@ impl Packet {
                 out.extend(&complete.signature);
                 Ok(out)
             }
-            Packet::Payload(data) => serialize_signed(PACKET_TYPE_PAYLOAD, data, signer),
+            Packet::ClientHello(_) => bail!("ClientHello requires a ConnSign signer"),
+            Packet::Payload(_) => bail!("Payload requires a PacketSign signer"),
+        }
+    }
+
+    /// Serialize a `ClientHello` with a `ConnSign` signer.
+    pub fn serialize_conn_signed(&self, signer: &ConnSign) -> Result<Vec<u8>> {
+        match self {
+            Packet::ClientHello(hello) => {
+                let body = encode_client_hello(hello);
+                serialize_conn_signed(PACKET_TYPE_CLIENT_HELLO, &body, signer)
+            }
+            _ => bail!("only ClientHello uses ConnSign packet signing"),
+        }
+    }
+
+    /// Serialize a `Payload` with a `PacketSign` signer.
+    pub fn serialize_packet_signed(&self, signer: &PacketSign) -> Result<Vec<u8>> {
+        match self {
+            Packet::Payload(data) => serialize_packet_signed(PACKET_TYPE_PAYLOAD, data, signer),
+            _ => bail!("only Payload uses PacketSign packet signing"),
         }
     }
 
@@ -208,8 +212,8 @@ impl Packet {
     /// packet does not carry its own verification key.
     pub fn deserialize(
         data: &[u8],
-        conn_verifier: Option<&dyn SignVerify>,
-        packet_verifier: Option<&dyn SignVerify>,
+        conn_verifier: Option<&ConnVerify>,
+        packet_verifier: Option<&PacketVerify>,
     ) -> Result<Self> {
         let (&packet_type, rest) = data
             .split_first()
@@ -224,7 +228,7 @@ impl Packet {
             PACKET_TYPE_CLIENT_HELLO => {
                 let hello = Self::peek_client_hello(data)?;
                 let verifier = conn_verifier.ok_or_else(|| anyhow!("missing conn verifier"))?;
-                verify_signed(rest, verifier)?;
+                verify_conn_signed(rest, verifier)?;
                 Ok(Packet::ClientHello(hello))
             }
             PACKET_TYPE_SERVER_COMPLETE => {
@@ -232,7 +236,7 @@ impl Packet {
             }
             PACKET_TYPE_PAYLOAD => {
                 let verifier = packet_verifier.ok_or_else(|| anyhow!("missing packet verifier"))?;
-                Ok(Packet::Payload(verify_signed(rest, verifier)?))
+                Ok(Packet::Payload(verify_packet_signed(rest, verifier)?))
             }
             other => bail!("unknown packet type {other}"),
         }
@@ -259,21 +263,38 @@ impl Packet {
     }
 }
 
-/// Sign a packet body and prefix the packet type byte.
-fn serialize_signed(packet_type: u8, body: &[u8], signer: &dyn SignVerify) -> Result<Vec<u8>> {
+/// Sign a connection-authenticated packet body and prefix the packet type byte.
+fn serialize_conn_signed(packet_type: u8, body: &[u8], signer: &ConnSign) -> Result<Vec<u8>> {
     let signed = signer.sign(body)?;
-    let mut out = Vec::with_capacity(1 + signed.0.len());
+    let mut out = Vec::with_capacity(1 + signed.len());
     out.push(packet_type);
-    out.extend(signed.0);
+    out.extend(signed);
     Ok(out)
 }
 
-/// Verify a signed wire body and return owned message bytes for further
-/// parsing.
-fn verify_signed(data: &[u8], verifier: &dyn SignVerify) -> Result<Vec<u8>> {
-    let signed = Signed(data.to_vec());
+/// Sign a payload packet body and prefix the packet type byte.
+fn serialize_packet_signed(packet_type: u8, body: &[u8], signer: &PacketSign) -> Result<Vec<u8>> {
+    let signed = signer.sign(body)?;
+    let mut out = Vec::with_capacity(1 + signed.len());
+    out.push(packet_type);
+    out.extend(signed);
+    Ok(out)
+}
+
+/// Verify a connection-authenticated wire body and return owned message bytes
+/// for further parsing.
+fn verify_conn_signed(data: &[u8], verifier: &ConnVerify) -> Result<Vec<u8>> {
     verifier
-        .verify(&signed)
+        .verify(data)
+        .map(std::borrow::Cow::into_owned)
+        .ok_or_else(|| anyhow!("packet signature verification failed"))
+}
+
+/// Verify a payload wire body and return owned message bytes for further
+/// parsing.
+fn verify_packet_signed(data: &[u8], verifier: &PacketVerify) -> Result<Vec<u8>> {
+    verifier
+        .verify(data)
         .map(std::borrow::Cow::into_owned)
         .ok_or_else(|| anyhow!("packet signature verification failed"))
 }
@@ -408,11 +429,22 @@ mod tests {
         ))
     }
 
-    /// Verify that the encoded body is signed correctly and recover the expected plaintext bytes.
-    fn verify_wire_body(verifier: &dyn SignVerify, packet_type: u8, encoded: &[u8], body: &[u8]) {
+    /// Verify that a connection-authenticated body is signed correctly.
+    fn verify_conn_wire_body(verifier: &ConnVerify, packet_type: u8, encoded: &[u8], body: &[u8]) {
         assert_eq!(encoded[0], packet_type);
-        let signed = Signed(encoded[1..].to_vec());
-        let verified = verifier.verify(&signed).unwrap();
+        let verified = verifier.verify(&encoded[1..]).unwrap();
+        assert_eq!(verified.as_ref(), body);
+    }
+
+    /// Verify that a payload body is signed correctly.
+    fn verify_packet_wire_body(
+        verifier: &PacketVerify,
+        packet_type: u8,
+        encoded: &[u8],
+        body: &[u8],
+    ) {
+        assert_eq!(encoded[0], packet_type);
+        let verified = verifier.verify(&encoded[1..]).unwrap();
         assert_eq!(verified.as_ref(), body);
     }
 
@@ -421,7 +453,7 @@ mod tests {
         let msg = b"hello, world";
         let signer = ConnSign::new()?;
         let signed = signer.sign(msg)?;
-        signer.verify(&signed).unwrap();
+        signer.verifier()?.verify(&signed).unwrap();
         Ok(())
     }
 
@@ -430,7 +462,7 @@ mod tests {
         let msg = b"hello, world";
         let signer = PacketSign::new()?;
         let signed = signer.sign(msg)?;
-        signer.verify(&signed).unwrap();
+        signer.verifier().verify(&signed).unwrap();
         Ok(())
     }
 
@@ -438,8 +470,8 @@ mod tests {
     fn public_only_verifiers() -> Result<()> {
         let conn_sign = ConnSign::new()?;
         let packet_sign = PacketSign::new()?;
-        let conn_verify = ConnVerify::new(conn_sign.public_key_bytes()?);
-        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
+        let conn_verify = conn_sign.verifier()?;
+        let packet_verify = packet_sign.verifier();
 
         let conn_signed = conn_sign.sign(b"conn-msg")?;
         let packet_signed = packet_sign.sign(b"packet-msg")?;
@@ -462,15 +494,14 @@ mod tests {
         let conn_sign = ConnSign::new()?;
         let packet_sign = PacketSign::new()?;
         let packet = Packet::ServerHello(test_server_hello(&conn_sign, &packet_sign)?);
-        let encoded = packet.serialize(&conn_sign)?;
+        let encoded = packet.serialize_unsigned()?;
         assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
         Ok(())
     }
 
     #[test]
     fn packet_round_trip_request_server_pubkey() -> Result<()> {
-        let conn_sign = ConnSign::new()?;
-        let encoded = Packet::RequestServerPubkey.serialize(&conn_sign)?;
+        let encoded = Packet::RequestServerPubkey.serialize_unsigned()?;
         assert_eq!(
             Packet::deserialize(&encoded, None, None)?,
             Packet::RequestServerPubkey
@@ -482,7 +513,7 @@ mod tests {
     fn packet_round_trip_server_pubkey() -> Result<()> {
         let conn_sign = ConnSign::new()?;
         let packet = Packet::ServerPubkey(ServerPubkey(conn_sign.public_key_bytes()?.clone()));
-        let encoded = packet.serialize(&conn_sign)?;
+        let encoded = packet.serialize_unsigned()?;
         assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
         Ok(())
     }
@@ -491,12 +522,12 @@ mod tests {
     fn packet_round_trip_client_hello() -> Result<()> {
         let conn_sign = ConnSign::new()?;
         let packet_sign = PacketSign::new()?;
-        let conn_verify = ConnVerify::new(conn_sign.public_key_bytes()?);
+        let conn_verify = conn_sign.verifier()?;
         let hello = test_client_hello(&conn_sign, &packet_sign)?;
         let packet = Packet::ClientHello(hello.clone());
-        let encoded = packet.serialize(&conn_sign)?;
-        verify_wire_body(
-            &conn_sign,
+        let encoded = packet.serialize_conn_signed(&conn_sign)?;
+        verify_conn_wire_body(
+            &conn_verify,
             PACKET_TYPE_CLIENT_HELLO,
             &encoded,
             &encode_client_hello(&hello),
@@ -513,7 +544,7 @@ mod tests {
         let conn_sign = ConnSign::new()?;
         let signature = conn_sign.sign_detached(b"server-hello||client-hello")?;
         let packet = Packet::ServerComplete(ServerComplete::new(signature.clone()));
-        let encoded = packet.serialize(&conn_sign)?;
+        let encoded = packet.serialize_unsigned()?;
         assert_eq!(encoded[0], PACKET_TYPE_SERVER_COMPLETE);
         assert_eq!(&encoded[1..], signature.as_slice());
         assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
@@ -523,21 +554,17 @@ mod tests {
     #[test]
     fn packet_round_trip_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
+        let packet_verify = packet_sign.verifier();
         let packet = Packet::Payload(vec![1, 2, 3, 4, 5]);
-        let encoded = packet.serialize(&packet_sign)?;
-        verify_wire_body(
+        let encoded = packet.serialize_packet_signed(&packet_sign)?;
+        verify_packet_wire_body(
             &packet_verify,
             PACKET_TYPE_PAYLOAD,
             &encoded,
             &[1, 2, 3, 4, 5],
         );
         assert_eq!(
-            Packet::deserialize(
-                &encoded,
-                None,
-                Some(&PacketVerify::new(packet_sign.public_key_bytes()))
-            )?,
+            Packet::deserialize(&encoded, None, Some(&packet_sign.verifier()))?,
             packet
         );
         Ok(())
@@ -549,7 +576,7 @@ mod tests {
         let packet_sign = PacketSign::new()?;
         let hello = test_server_hello(&conn_sign, &packet_sign)?;
         let packet = Packet::ServerHello(hello.clone());
-        let encoded = packet.serialize(&conn_sign)?;
+        let encoded = packet.serialize_unsigned()?;
         let mut expected = vec![PACKET_TYPE_SERVER_HELLO];
         expected.extend(encode_server_hello(&hello));
         assert_eq!(encoded, expected);
@@ -578,10 +605,11 @@ mod tests {
     #[test]
     fn packet_deserialize_rejects_invalid_signature() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let mut encoded = Packet::Payload(vec![1, 2, 3]).serialize(&packet_sign)?;
+        let mut encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
         let last = encoded.len() - 1;
         encoded[last] ^= 0x01;
-        let err = Packet::deserialize(&encoded, None, Some(&packet_sign)).unwrap_err();
+        let verifier = packet_sign.verifier();
+        let err = Packet::deserialize(&encoded, None, Some(&verifier)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
         Ok(())
     }
@@ -589,7 +617,7 @@ mod tests {
     #[test]
     fn packet_deserialize_requires_payload_verifier() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let encoded = Packet::Payload(vec![1, 2, 3]).serialize(&packet_sign)?;
+        let encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
         let err = Packet::deserialize(&encoded, None, None).unwrap_err();
         assert!(err.to_string().contains("missing packet verifier"));
         Ok(())
@@ -598,8 +626,8 @@ mod tests {
     #[test]
     fn packet_deserialize_rejects_replayed_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
-        let encoded = Packet::Payload(vec![1, 2, 3]).serialize(&packet_sign)?;
+        let packet_verify = packet_sign.verifier();
+        let encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
 
         assert_eq!(
             Packet::deserialize(&encoded, None, Some(&packet_verify))?,
@@ -614,9 +642,9 @@ mod tests {
     #[test]
     fn packet_deserialize_rejects_out_of_order_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let packet_verify = PacketVerify::new(packet_sign.public_key_bytes());
-        let first = Packet::Payload(vec![1]).serialize(&packet_sign)?;
-        let second = Packet::Payload(vec![2]).serialize(&packet_sign)?;
+        let packet_verify = packet_sign.verifier();
+        let first = Packet::Payload(vec![1]).serialize_packet_signed(&packet_sign)?;
+        let second = Packet::Payload(vec![2]).serialize_packet_signed(&packet_sign)?;
 
         let err = Packet::deserialize(&second, None, Some(&packet_verify)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
@@ -633,12 +661,13 @@ mod tests {
         let packet_sign = PacketSign::new()?;
         assert!(
             packet_sign
-                .verify(&Signed(vec![0; ED25519_SIGNATURE_LEN - 1]))
+                .verifier()
+                .verify(&[0; ED25519_SIGNATURE_LEN - 1])
                 .is_none()
         );
 
         let conn_sign = ConnSign::new()?;
-        assert!(conn_sign.verify(&Signed(vec![])).is_none());
+        assert!(conn_sign.verifier()?.verify(&[]).is_none());
         Ok(())
     }
 }
