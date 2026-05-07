@@ -1,11 +1,12 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
+#![allow(clippy::unnecessary_debug_formatting)]
 
 // TODO: replace with thiserror.
 use std::cell::Cell;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use aws_lc_rs::{
     digest,
     encoding::AsDer,
@@ -220,7 +221,9 @@ impl ConnSign {
 
     /// Load a `ConnSign` key from a file.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
+        let path = path.as_ref();
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read ConnSign key file {path:?}"))?;
         Self::from_bytes(&bytes)
     }
 
@@ -260,7 +263,9 @@ impl ConnSign {
 
             options.mode(0o600);
         }
-        let mut file = options.open(path)?;
+        let mut file = options
+            .open(path)
+            .with_context(|| format!("failed to create ConnSign key file {path:?}"))?;
         std::io::Write::write_all(&mut file, &bundle)?;
         Ok(())
     }

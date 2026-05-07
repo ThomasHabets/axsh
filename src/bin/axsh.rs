@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_debug_formatting)]
+
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -41,7 +43,12 @@ fn load_known_hosts(path: &std::path::Path) -> std::io::Result<HashMap<String, V
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(err) => return Err(err),
+        Err(err) => {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!("failed to read known_hosts file {path:?}: {err}"),
+            ));
+        }
     };
     let mut hosts = HashMap::new();
     for (lineno, line) in contents.lines().enumerate() {
@@ -52,15 +59,14 @@ fn load_known_hosts(path: &std::path::Path) -> std::io::Result<HashMap<String, V
         let (host, key) = parse_known_host(line).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}:{}: {e}", path.display(), lineno + 1),
+                format!("{path:?}:{}: {e}", lineno + 1),
             )
         })?;
         if hosts.insert(host.clone(), key).is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "{}:{}: duplicate known-host entry for {host}",
-                    path.display(),
+                    "{path:?}:{}: duplicate known-host entry for {host}",
                     lineno + 1
                 ),
             ));
@@ -74,7 +80,12 @@ fn append_known_host(path: &std::path::Path, host: &str, public_key: &[u8]) -> s
     let needs_newline = match std::fs::read(path) {
         Ok(contents) => !contents.is_empty() && contents.last().copied() != Some(b'\n'),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-        Err(err) => return Err(err),
+        Err(err) => {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!("failed to read known_hosts file {path:?}: {err}"),
+            ));
+        }
     };
 
     let mut options = std::fs::OpenOptions::new();
@@ -85,7 +96,12 @@ fn append_known_host(path: &std::path::Path, host: &str, public_key: &[u8]) -> s
 
         options.mode(0o600);
     }
-    let mut file = options.open(path)?;
+    let mut file = options.open(path).map_err(|err| {
+        std::io::Error::new(
+            err.kind(),
+            format!("failed to open known_hosts file {path:?}: {err}"),
+        )
+    })?;
     if needs_newline {
         std::io::Write::write_all(&mut file, b"\n")?;
     }

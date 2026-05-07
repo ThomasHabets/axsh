@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_debug_formatting)]
 use clap::Parser;
 
 #[derive(Parser)]
@@ -7,7 +8,12 @@ struct Args {
 
 /// Load one public key from an authorized-key or known-hosts line.
 fn load_public_key(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    let contents = std::fs::read_to_string(path)?;
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        std::io::Error::new(
+            err.kind(),
+            format!("failed to read public key file {path:?}: {err}"),
+        )
+    })?;
     let mut public_key = None;
 
     for (lineno, line) in contents.lines().enumerate() {
@@ -26,14 +32,14 @@ fn load_public_key(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
         .map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}:{}: {e}", path.display(), lineno + 1),
+                format!("{path:?}:{}: {e}", lineno + 1),
             )
         })?;
 
         if public_key.replace(key).is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}: expected exactly one public key entry", path.display()),
+                format!("{path:?}: expected exactly one public key entry"),
             ));
         }
     }
@@ -41,7 +47,7 @@ fn load_public_key(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     public_key.ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("{}: no public key entry found", path.display()),
+            format!("{path:?}: no public key entry found"),
         )
     })
 }

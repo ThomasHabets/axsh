@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_debug_formatting)]
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::str::FromStr;
@@ -46,7 +47,12 @@ struct Args {
 fn load_authorized_keys(
     path: &std::path::Path,
 ) -> std::io::Result<HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>> {
-    let contents = std::fs::read_to_string(path)?;
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        std::io::Error::new(
+            err.kind(),
+            format!("failed to read authorized_keys file {path:?}: {err}"),
+        )
+    })?;
     let mut keys = HashMap::new();
     for (lineno, line) in contents.lines().enumerate() {
         let line = line.trim();
@@ -56,18 +62,14 @@ fn load_authorized_keys(
         let key = parse_authorized_conn_key(line).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}:{}: {e}", path.display(), lineno + 1),
+                format!("{path:?}:{}: {e}", lineno + 1),
             )
         })?;
         let digest = sha256_bytes(&key);
         if keys.insert(digest, key).is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "{}:{}: duplicate authorized key digest",
-                    path.display(),
-                    lineno + 1
-                ),
+                format!("{path:?}:{}: duplicate authorized key digest", lineno + 1),
             ));
         }
     }
