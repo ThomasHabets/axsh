@@ -78,7 +78,10 @@ Warning: Permanently added 'M0QQQ-1' (mldsa-ed25519) to the list of known hosts.
 INFO Handshake successful
 echo hello world
 hello world
+>>> Exit status 0
 ```
+
+That last line means `echo` ran successfully.
 
 ## Security
 
