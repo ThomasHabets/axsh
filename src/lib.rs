@@ -181,6 +181,8 @@ pub struct ConnSign {
 
 impl ConnSign {
     /// Generate a fresh `ConnSign` key with independent ML-DSA and Ed25519 signing keys.
+    ///
+    /// Useful for key generators, as this is the long term `ConnSign` key.
     pub fn new() -> Result<Self> {
         let alg = &ML_DSA_44_SIGNING;
         let ml_dsa_key_pair = PqdsaKeyPair::generate(alg)?;
@@ -236,8 +238,7 @@ impl ConnSign {
 
     /// Produce a detached ML-DSA+Ed25519 signature bundle for `data`.
     pub fn sign_detached(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let signed = self.sign(data)?;
-        Ok(signed[..conn_signature_len()].to_vec())
+        self.signature(data)
     }
 
     /// Write the `ConnSign` private key bundle to a file.
@@ -259,6 +260,23 @@ impl ConnSign {
 
     /// Sign bytes and prepend the fixed-size ML-DSA and Ed25519 signatures.
     pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut signed = self.signature(data)?;
+        signed.extend(data);
+        Ok(signed)
+    }
+
+    /// Sign `prefix || data`, but only prepend the signature to `data`.
+    pub fn sign_prefixed(&self, prefix: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        let mut message = Vec::with_capacity(prefix.len() + data.len());
+        message.extend(prefix);
+        message.extend(data);
+        let mut signed = self.signature(&message)?;
+        signed.extend(data);
+        Ok(signed)
+    }
+
+    /// Sign and return just the signature.
+    fn signature(&self, data: &[u8]) -> Result<Vec<u8>> {
         let alg = &ML_DSA_44_SIGNING;
         let mut ml_dsa_sig = vec![0u8; alg.signature_len()];
         let n = self.ml_dsa_key_pair.sign(data, &mut ml_dsa_sig)?;
@@ -270,7 +288,6 @@ impl ConnSign {
             Vec::with_capacity(ml_dsa_sig.len() + ed25519_sig.as_ref().len() + data.len());
         sig.extend(ml_dsa_sig);
         sig.extend(ed25519_sig.as_ref());
-        sig.extend(data);
         Ok(sig)
     }
 
@@ -314,6 +331,7 @@ impl PacketVerify {
     }
 }
 
+/// Verifier for the long term `ConnSign` key.
 pub struct ConnVerify {
     public_key_bundle: Vec<u8>,
 }
@@ -353,6 +371,25 @@ impl ConnVerify {
         let ed25519_public_key = UnparsedPublicKey::new(&ED25519, ed25519_public_key);
         ed25519_public_key.verify(msg, ed25519_sig).ok()?;
         Some(std::borrow::Cow::Borrowed(msg))
+    }
+
+    /// Verify `signature || data` against `prefix || data`.
+    #[must_use]
+    pub fn verify_prefixed<'a>(
+        &self,
+        prefix: &[u8],
+        data: &'a [u8],
+    ) -> Option<std::borrow::Cow<'a, [u8]>> {
+        if data.len() < conn_signature_len() {
+            return None;
+        }
+        let (signature, message) = data.split_at(conn_signature_len());
+        let mut signed = Vec::with_capacity(signature.len() + prefix.len() + message.len());
+        signed.extend(signature);
+        signed.extend(prefix);
+        signed.extend(message);
+        self.verify(&signed)?;
+        Some(std::borrow::Cow::Borrowed(message))
     }
 }
 

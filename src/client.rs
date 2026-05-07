@@ -59,8 +59,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
         // Read ServerHello.
         let frame = hdlc::read_frame_async(&mut stream).await?;
         let server_hello_wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-        let packet =
-            Packet::deserialize(&server_hello_wire, None, None).map_err(std::io::Error::other)?;
+        let packet = Packet::deserialize(&server_hello_wire, None, None, None)
+            .map_err(std::io::Error::other)?;
         let Packet::ServerHello(server_hello) = packet else {
             return Err(std::io::Error::other(format!(
                 "expected ServerHello, got {packet:?}"
@@ -75,43 +75,43 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
         );
 
         // Get server connection public key from cache or by requesting it.
-        let server_conn_sign_public_key = if let Some(public_key) =
-            lookup_server_pubkey(&server_hello)?
-        {
-            debug!(
-                "axsh: Server key matching {} found in cache",
-                format_sha256_digest(&server_hello.conn_sign_public_key_sha256()),
-            );
-            public_key
-        } else {
-            debug!(
-                "axsh: Requesting key matching {}",
-                format_sha256_digest(&server_hello.conn_sign_public_key_sha256()),
-            );
+        let server_conn_sign_public_key =
+            if let Some(public_key) = lookup_server_pubkey(&server_hello)? {
+                debug!(
+                    "axsh: Server key matching {} found in cache",
+                    format_sha256_digest(&server_hello.conn_sign_public_key_sha256()),
+                );
+                public_key
+            } else {
+                debug!(
+                    "axsh: Requesting key matching {}",
+                    format_sha256_digest(&server_hello.conn_sign_public_key_sha256()),
+                );
 
-            // Request public key.
-            let request = Packet::RequestServerPubkey
-                .serialize_unsigned()
-                .map_err(std::io::Error::other)?;
-            debug!(
-                "axsh: Sending RequestServerPubkey ({} bytes)",
-                request.len()
-            );
-            stream.write_all(&hdlc::encode(&request)).await?;
-            stream.flush().await?;
+                // Request public key.
+                let request = Packet::RequestServerPubkey
+                    .serialize_unsigned()
+                    .map_err(std::io::Error::other)?;
+                debug!(
+                    "axsh: Sending RequestServerPubkey ({} bytes)",
+                    request.len()
+                );
+                stream.write_all(&hdlc::encode(&request)).await?;
+                stream.flush().await?;
 
-            // Retrieve public key.
-            let frame = hdlc::read_frame_async(&mut stream).await?;
-            let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-            let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
-            let Packet::ServerPubkey(server_pubkey) = packet else {
-                return Err(std::io::Error::other(format!(
-                    "expected ServerPubkey, got {packet:?}"
-                )));
+                // Retrieve public key.
+                let frame = hdlc::read_frame_async(&mut stream).await?;
+                let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
+                let packet =
+                    Packet::deserialize(&wire, None, None, None).map_err(std::io::Error::other)?;
+                let Packet::ServerPubkey(server_pubkey) = packet else {
+                    return Err(std::io::Error::other(format!(
+                        "expected ServerPubkey, got {packet:?}"
+                    )));
+                };
+                debug!("axsh: Receiver ServerPubkey ({} bytes)", wire.len());
+                server_pubkey.0.clone()
             };
-            debug!("axsh: Receiver ServerPubkey ({} bytes)", wire.len());
-            server_pubkey.0.clone()
-        };
 
         // Confirm that we actually got the public key mentioned in `ServerHello`.
         {
@@ -138,13 +138,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
 
         // Reply with ClientHello.
         let packet = Packet::ClientHello(ClientHello::new(
-            server_hello.unique(),
             random_u64()?,
             sha256_bytes(&client_conn_sign_public_key),
             packet_sign.public_key_bytes(),
         ));
         let client_hello_wire = packet
-            .serialize_conn_signed(&conn_sign)
+            .serialize_conn_signed(&conn_sign, server_hello.unique())
             .map_err(std::io::Error::other)?;
         debug!(
             "axsh: Sending ClientHello ({} bytes)",
@@ -157,7 +156,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
         // Read ServerComplete.
         let frame = hdlc::read_frame_async(&mut stream).await?;
         let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-        let packet = Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+        let packet = Packet::deserialize(&wire, None, None, None).map_err(std::io::Error::other)?;
         match packet {
             Packet::ServerComplete(complete) => {
                 debug!(

@@ -53,8 +53,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
             let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
             match Packet::peek_type(&wire).map_err(std::io::Error::other)? {
                 PACKET_TYPE_REQUEST_SERVER_PUBKEY => {
-                    let packet =
-                        Packet::deserialize(&wire, None, None).map_err(std::io::Error::other)?;
+                    let packet = Packet::deserialize(&wire, None, None, None)
+                        .map_err(std::io::Error::other)?;
                     let Packet::RequestServerPubkey = packet else {
                         unreachable!("packet type and parsed packet disagreed")
                     };
@@ -75,8 +75,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                         ));
                     };
                     let client_conn_verify = ConnVerify::new(client_conn_sign_public_key.clone());
-                    let packet = Packet::deserialize(&wire, Some(&client_conn_verify), None)
-                        .map_err(std::io::Error::other)?;
+                    let packet =
+                        Packet::deserialize(&wire, Some(unique), Some(&client_conn_verify), None)
+                            .map_err(std::io::Error::other)?;
                     let Packet::ClientHello(client_hello) = packet else {
                         unreachable!("packet type and parsed packet disagreed")
                     };
@@ -92,18 +93,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
         debug!(
             "axsh: Received ClientHello ({} bytes): server_unique={}, client_unique={}, conn_key={}, packet_key={} bytes",
             client_hello_wire.len(),
-            client_hello.server_unique(),
+            unique,
             client_hello.unique(),
             format_sha256_digest(&client_hello.conn_sign_public_key_sha256()),
             client_hello.packet_sign_public_key().len()
         );
-        if client_hello.server_unique() != unique {
-            return Err(std::io::Error::other(format!(
-                "client echoed server_unique={} but expected {}",
-                client_hello.server_unique(),
-                unique
-            )));
-        }
         let client_packet_verify = PacketVerify::new(client_hello.packet_sign_public_key());
 
         // Send ServerComplete.

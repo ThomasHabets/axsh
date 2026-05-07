@@ -58,33 +58,24 @@ pub struct ServerPubkey(pub(crate) Vec<u8>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientHello {
-    server_unique: u64,
     unique: u64,
     conn_sign_public_key_sha256: [u8; SHA256_DIGEST_LEN],
     packet_sign_public_key: [u8; ED25519_PUBLIC_KEY_LEN],
 }
 
 impl ClientHello {
-    /// Create a client hello with both hello challenges, a client key digest, and a packet key.
+    /// Create a client hello with a client challenge, a client key digest, and a packet key.
     #[must_use]
     pub fn new(
-        server_unique: u64,
         unique: u64,
         conn_sign_public_key_sha256: [u8; SHA256_DIGEST_LEN],
         packet_sign_public_key: [u8; ED25519_PUBLIC_KEY_LEN],
     ) -> Self {
         Self {
-            server_unique,
             unique,
             conn_sign_public_key_sha256,
             packet_sign_public_key,
         }
-    }
-
-    /// Return the echoed server challenge.
-    #[must_use]
-    pub fn server_unique(&self) -> u64 {
-        self.server_unique
     }
 
     /// Return the client's fresh challenge value.
@@ -189,12 +180,13 @@ impl Packet {
         }
     }
 
-    /// Serialize a `ClientHello` with a `ConnSign` signer.
-    pub fn serialize_conn_signed(&self, signer: &ConnSign) -> Result<Vec<u8>> {
+    /// Serialize a `ClientHello` with a `ConnSign` signer and an implicit
+    /// server challenge.
+    pub fn serialize_conn_signed(&self, signer: &ConnSign, server_unique: u64) -> Result<Vec<u8>> {
         match self {
             Packet::ClientHello(hello) => {
                 let body = encode_client_hello(hello);
-                serialize_conn_signed(PACKET_TYPE_CLIENT_HELLO, &body, signer)
+                serialize_conn_signed(PACKET_TYPE_CLIENT_HELLO, server_unique, &body, signer)
             }
             _ => bail!("only ClientHello uses ConnSign packet signing"),
         }
@@ -212,6 +204,7 @@ impl Packet {
     /// packet does not carry its own verification key.
     pub fn deserialize(
         data: &[u8],
+        client_hello_server_unique: Option<u64>,
         conn_verifier: Option<&ConnVerify>,
         packet_verifier: Option<&PacketVerify>,
     ) -> Result<Self> {
@@ -227,8 +220,10 @@ impl Packet {
             PACKET_TYPE_SERVER_PUBKEY => Ok(Packet::ServerPubkey(ServerPubkey(rest.to_vec()))),
             PACKET_TYPE_CLIENT_HELLO => {
                 let hello = Self::peek_client_hello(data)?;
+                let server_unique = client_hello_server_unique
+                    .ok_or_else(|| anyhow!("missing ClientHello server_unique"))?;
                 let verifier = conn_verifier.ok_or_else(|| anyhow!("missing conn verifier"))?;
-                verify_conn_signed(rest, verifier)?;
+                verify_conn_signed(rest, server_unique, verifier)?;
                 Ok(Packet::ClientHello(hello))
             }
             PACKET_TYPE_SERVER_COMPLETE => {
@@ -264,8 +259,13 @@ impl Packet {
 }
 
 /// Sign a connection-authenticated packet body and prefix the packet type byte.
-fn serialize_conn_signed(packet_type: u8, body: &[u8], signer: &ConnSign) -> Result<Vec<u8>> {
-    let signed = signer.sign(body)?;
+fn serialize_conn_signed(
+    packet_type: u8,
+    server_unique: u64,
+    body: &[u8],
+    signer: &ConnSign,
+) -> Result<Vec<u8>> {
+    let signed = signer.sign_prefixed(&server_unique.to_be_bytes(), body)?;
     let mut out = Vec::with_capacity(1 + signed.len());
     out.push(packet_type);
     out.extend(signed);
@@ -283,9 +283,9 @@ fn serialize_packet_signed(packet_type: u8, body: &[u8], signer: &PacketSign) ->
 
 /// Verify a connection-authenticated wire body and return owned message bytes
 /// for further parsing.
-fn verify_conn_signed(data: &[u8], verifier: &ConnVerify) -> Result<Vec<u8>> {
+fn verify_conn_signed(data: &[u8], server_unique: u64, verifier: &ConnVerify) -> Result<Vec<u8>> {
     verifier
-        .verify(data)
+        .verify_prefixed(&server_unique.to_be_bytes(), data)
         .map(std::borrow::Cow::into_owned)
         .ok_or_else(|| anyhow!("packet signature verification failed"))
 }
@@ -334,13 +334,11 @@ fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
     ))
 }
 
-/// Encode a client hello body with both challenges and both public keys.
+/// Encode a client hello body with the client challenge and both public keys.
 #[must_use]
 fn encode_client_hello(hello: &ClientHello) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        2 * std::mem::size_of::<u64>() + SHA256_DIGEST_LEN + ED25519_PUBLIC_KEY_LEN,
-    );
-    out.extend(hello.server_unique.to_be_bytes());
+    let mut out =
+        Vec::with_capacity(std::mem::size_of::<u64>() + SHA256_DIGEST_LEN + ED25519_PUBLIC_KEY_LEN);
     out.extend(hello.unique.to_be_bytes());
     out.extend(hello.conn_sign_public_key_sha256);
     out.extend(hello.packet_sign_public_key);
@@ -349,13 +347,11 @@ fn encode_client_hello(hello: &ClientHello) -> Vec<u8> {
 
 /// Decode a client hello body.
 fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
-    let (server_unique, rest) = take_u64(data)?;
-    let (unique, rest) = take_u64(rest)?;
+    let (unique, rest) = take_u64(data)?;
     let (conn_sign_public_key_sha256, rest) = take_fixed::<SHA256_DIGEST_LEN>(rest)?;
     let (packet_sign_public_key, rest) = take_fixed::<ED25519_PUBLIC_KEY_LEN>(rest)?;
     ensure!(rest.is_empty(), "client hello has trailing bytes");
     Ok(ClientHello::new(
-        server_unique,
         unique,
         conn_sign_public_key_sha256,
         packet_sign_public_key,
@@ -422,7 +418,6 @@ mod tests {
     fn test_client_hello(conn_sign: &ConnSign, packet_sign: &PacketSign) -> Result<ClientHello> {
         let conn_sign_public_key = conn_sign.public_key_bytes()?;
         Ok(ClientHello::new(
-            0xfeed_face_cafe_babe,
             0x0123_4567_89ab_cdef,
             sha256_bytes(&conn_sign_public_key),
             packet_sign.public_key_bytes(),
@@ -430,9 +425,17 @@ mod tests {
     }
 
     /// Verify that a connection-authenticated body is signed correctly.
-    fn verify_conn_wire_body(verifier: &ConnVerify, packet_type: u8, encoded: &[u8], body: &[u8]) {
+    fn verify_conn_wire_body(
+        verifier: &ConnVerify,
+        server_unique: u64,
+        packet_type: u8,
+        encoded: &[u8],
+        body: &[u8],
+    ) {
         assert_eq!(encoded[0], packet_type);
-        let verified = verifier.verify(&encoded[1..]).unwrap();
+        let verified = verifier
+            .verify_prefixed(&server_unique.to_be_bytes(), &encoded[1..])
+            .unwrap();
         assert_eq!(verified.as_ref(), body);
     }
 
@@ -495,7 +498,7 @@ mod tests {
         let packet_sign = PacketSign::new()?;
         let packet = Packet::ServerHello(test_server_hello(&conn_sign, &packet_sign)?);
         let encoded = packet.serialize_unsigned()?;
-        assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
+        assert_eq!(Packet::deserialize(&encoded, None, None, None)?, packet);
         Ok(())
     }
 
@@ -503,7 +506,7 @@ mod tests {
     fn packet_round_trip_request_server_pubkey() -> Result<()> {
         let encoded = Packet::RequestServerPubkey.serialize_unsigned()?;
         assert_eq!(
-            Packet::deserialize(&encoded, None, None)?,
+            Packet::deserialize(&encoded, None, None, None)?,
             Packet::RequestServerPubkey
         );
         Ok(())
@@ -514,7 +517,7 @@ mod tests {
         let conn_sign = ConnSign::new()?;
         let packet = Packet::ServerPubkey(ServerPubkey(conn_sign.public_key_bytes()?.clone()));
         let encoded = packet.serialize_unsigned()?;
-        assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
+        assert_eq!(Packet::deserialize(&encoded, None, None, None)?, packet);
         Ok(())
     }
 
@@ -523,19 +526,39 @@ mod tests {
         let conn_sign = ConnSign::new()?;
         let packet_sign = PacketSign::new()?;
         let conn_verify = conn_sign.verifier()?;
+        let server_unique = 0xfeed_face_cafe_babe;
         let hello = test_client_hello(&conn_sign, &packet_sign)?;
         let packet = Packet::ClientHello(hello.clone());
-        let encoded = packet.serialize_conn_signed(&conn_sign)?;
+        let encoded = packet.serialize_conn_signed(&conn_sign, server_unique)?;
         verify_conn_wire_body(
             &conn_verify,
+            server_unique,
             PACKET_TYPE_CLIENT_HELLO,
             &encoded,
             &encode_client_hello(&hello),
         );
         assert_eq!(
-            Packet::deserialize(&encoded, Some(&conn_verify), None)?,
+            Packet::deserialize(&encoded, Some(server_unique), Some(&conn_verify), None)?,
             packet
         );
+        Ok(())
+    }
+
+    #[test]
+    fn client_hello_rejects_wrong_server_unique() -> Result<()> {
+        let conn_sign = ConnSign::new()?;
+        let packet_sign = PacketSign::new()?;
+        let conn_verify = conn_sign.verifier()?;
+        let packet = Packet::ClientHello(test_client_hello(&conn_sign, &packet_sign)?);
+        let encoded = packet.serialize_conn_signed(&conn_sign, 0xfeed_face_cafe_babe)?;
+        let err = Packet::deserialize(
+            &encoded,
+            Some(0x0123_4567_89ab_cdef),
+            Some(&conn_verify),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("signature verification failed"));
         Ok(())
     }
 
@@ -547,7 +570,7 @@ mod tests {
         let encoded = packet.serialize_unsigned()?;
         assert_eq!(encoded[0], PACKET_TYPE_SERVER_COMPLETE);
         assert_eq!(&encoded[1..], signature.as_slice());
-        assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
+        assert_eq!(Packet::deserialize(&encoded, None, None, None)?, packet);
         Ok(())
     }
 
@@ -564,7 +587,7 @@ mod tests {
             &[1, 2, 3, 4, 5],
         );
         assert_eq!(
-            Packet::deserialize(&encoded, None, Some(&packet_sign.verifier()))?,
+            Packet::deserialize(&encoded, None, None, Some(&packet_sign.verifier()))?,
             packet
         );
         Ok(())
@@ -585,8 +608,8 @@ mod tests {
 
     #[test]
     fn packet_deserialize_rejects_truncated_hello() {
-        let err =
-            Packet::deserialize(&[PACKET_TYPE_SERVER_HELLO, 1, 2, 3], None, None).unwrap_err();
+        let err = Packet::deserialize(&[PACKET_TYPE_SERVER_HELLO, 1, 2, 3], None, None, None)
+            .unwrap_err();
         assert!(err.to_string().contains("expected at least 8 bytes"));
     }
 
@@ -597,7 +620,7 @@ mod tests {
         signature.pop();
         let mut packet = vec![PACKET_TYPE_SERVER_COMPLETE];
         packet.extend(signature);
-        let err = Packet::deserialize(&packet, None, None).unwrap_err();
+        let err = Packet::deserialize(&packet, None, None, None).unwrap_err();
         assert!(err.to_string().contains("signature length"));
         Ok(())
     }
@@ -609,7 +632,7 @@ mod tests {
         let last = encoded.len() - 1;
         encoded[last] ^= 0x01;
         let verifier = packet_sign.verifier();
-        let err = Packet::deserialize(&encoded, None, Some(&verifier)).unwrap_err();
+        let err = Packet::deserialize(&encoded, None, None, Some(&verifier)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
         Ok(())
     }
@@ -618,7 +641,7 @@ mod tests {
     fn packet_deserialize_requires_payload_verifier() -> Result<()> {
         let packet_sign = PacketSign::new()?;
         let encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
-        let err = Packet::deserialize(&encoded, None, None).unwrap_err();
+        let err = Packet::deserialize(&encoded, None, None, None).unwrap_err();
         assert!(err.to_string().contains("missing packet verifier"));
         Ok(())
     }
@@ -630,11 +653,11 @@ mod tests {
         let encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
 
         assert_eq!(
-            Packet::deserialize(&encoded, None, Some(&packet_verify))?,
+            Packet::deserialize(&encoded, None, None, Some(&packet_verify))?,
             Packet::Payload(vec![1, 2, 3])
         );
 
-        let err = Packet::deserialize(&encoded, None, Some(&packet_verify)).unwrap_err();
+        let err = Packet::deserialize(&encoded, None, None, Some(&packet_verify)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
         Ok(())
     }
@@ -646,11 +669,11 @@ mod tests {
         let first = Packet::Payload(vec![1]).serialize_packet_signed(&packet_sign)?;
         let second = Packet::Payload(vec![2]).serialize_packet_signed(&packet_sign)?;
 
-        let err = Packet::deserialize(&second, None, Some(&packet_verify)).unwrap_err();
+        let err = Packet::deserialize(&second, None, None, Some(&packet_verify)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
 
         assert_eq!(
-            Packet::deserialize(&first, None, Some(&packet_verify))?,
+            Packet::deserialize(&first, None, None, Some(&packet_verify))?,
             Packet::Payload(vec![1])
         );
         Ok(())
