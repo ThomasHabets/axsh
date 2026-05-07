@@ -13,6 +13,7 @@ use aws_lc_rs::{
     unstable::signature::{ML_DSA_44, ML_DSA_44_SIGNING, PqdsaKeyPair},
 };
 use clap::ValueEnum;
+use log::warn;
 
 mod base64;
 mod client;
@@ -31,6 +32,12 @@ pub const SHA256_DIGEST_LEN: usize = 32;
 const CONN_PUBLIC_KEY_VERSION: u8 = 1;
 const CONN_PRIVATE_KEY_MAGIC: &[u8; 8] = b"AXSHCK02";
 pub const CONN_AUTHORIZED_KEY_KIND: &str = "mldsa-ed25519";
+
+/// Limit session idle time to 1h so that an active attacker with a slow quantum
+/// computer can't hold the connection open until they can break the
+/// `PacketSign` key.
+// TODO: Add ability of client to send keepalives.
+pub const MAX_CONNECTION_IDLE: std::time::Duration = std::time::Duration::from_hours(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum LogLevel {
@@ -298,8 +305,9 @@ impl ConnSign {
 }
 
 pub struct PacketVerify {
+    last_success: std::time::Instant,
     public_key: [u8; ED25519_PUBLIC_KEY_LEN],
-    verify_counter: Cell<u64>,
+    verify_counter: u64,
 }
 
 impl PacketVerify {
@@ -308,23 +316,31 @@ impl PacketVerify {
     pub fn new(public_key: [u8; ED25519_PUBLIC_KEY_LEN]) -> Self {
         Self {
             public_key,
-            verify_counter: Cell::new(0),
+            last_success: std::time::Instant::now(),
+            verify_counter: 0,
         }
     }
 
     /// Verify signed bytes with the stored Ed25519 public key and the next implicit counter.
-    pub fn verify<'a>(&self, data: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
+    pub fn verify<'a>(&mut self, data: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
         if data.len() < ED25519_SIGNATURE_LEN {
             return None;
         }
+        if self.last_success.elapsed() > MAX_CONNECTION_IDLE {
+            warn!(
+                "axsh: Refusing to decode packets after an idle time of more than {MAX_CONNECTION_IDLE:?}"
+            );
+            return None;
+        }
         let (sig, msg) = data.split_at(ED25519_SIGNATURE_LEN);
-        let counter = self.verify_counter.get();
+        let counter = self.verify_counter;
         let input = packet_signature_input(counter, msg);
         let public_key = UnparsedPublicKey::new(&ED25519, self.public_key);
         public_key
             .verify(&input, sig.as_ref())
             .map(|()| {
-                self.verify_counter.set(counter + 1);
+                self.verify_counter = counter + 1;
+                self.last_success = std::time::Instant::now();
                 std::borrow::Cow::Borrowed(msg)
             })
             .ok()

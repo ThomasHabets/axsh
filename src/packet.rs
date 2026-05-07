@@ -206,7 +206,7 @@ impl Packet {
         data: &[u8],
         client_hello_server_unique: Option<u64>,
         conn_verifier: Option<&ConnVerify>,
-        packet_verifier: Option<&PacketVerify>,
+        packet_verifier: Option<&mut PacketVerify>,
     ) -> Result<Self> {
         let (&packet_type, rest) = data
             .split_first()
@@ -292,7 +292,7 @@ fn verify_conn_signed(data: &[u8], server_unique: u64, verifier: &ConnVerify) ->
 
 /// Verify a payload wire body and return owned message bytes for further
 /// parsing.
-fn verify_packet_signed(data: &[u8], verifier: &PacketVerify) -> Result<Vec<u8>> {
+fn verify_packet_signed(data: &[u8], verifier: &mut PacketVerify) -> Result<Vec<u8>> {
     verifier
         .verify(data)
         .map(std::borrow::Cow::into_owned)
@@ -441,7 +441,7 @@ mod tests {
 
     /// Verify that a payload body is signed correctly.
     fn verify_packet_wire_body(
-        verifier: &PacketVerify,
+        verifier: &mut PacketVerify,
         packet_type: u8,
         encoded: &[u8],
         body: &[u8],
@@ -474,7 +474,7 @@ mod tests {
         let conn_sign = ConnSign::new()?;
         let packet_sign = PacketSign::new()?;
         let conn_verify = conn_sign.verifier()?;
-        let packet_verify = packet_sign.verifier();
+        let mut packet_verify = packet_sign.verifier();
 
         let conn_signed = conn_sign.sign(b"conn-msg")?;
         let packet_signed = packet_sign.sign(b"packet-msg")?;
@@ -577,17 +577,17 @@ mod tests {
     #[test]
     fn packet_round_trip_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let packet_verify = packet_sign.verifier();
+        let mut packet_verify = packet_sign.verifier();
         let packet = Packet::Payload(vec![1, 2, 3, 4, 5]);
         let encoded = packet.serialize_packet_signed(&packet_sign)?;
         verify_packet_wire_body(
-            &packet_verify,
+            &mut packet_verify,
             PACKET_TYPE_PAYLOAD,
             &encoded,
             &[1, 2, 3, 4, 5],
         );
         assert_eq!(
-            Packet::deserialize(&encoded, None, None, Some(&packet_sign.verifier()))?,
+            Packet::deserialize(&encoded, None, None, Some(&mut packet_sign.verifier()))?,
             packet
         );
         Ok(())
@@ -631,8 +631,8 @@ mod tests {
         let mut encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
         let last = encoded.len() - 1;
         encoded[last] ^= 0x01;
-        let verifier = packet_sign.verifier();
-        let err = Packet::deserialize(&encoded, None, None, Some(&verifier)).unwrap_err();
+        let mut verifier = packet_sign.verifier();
+        let err = Packet::deserialize(&encoded, None, None, Some(&mut verifier)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
         Ok(())
     }
@@ -649,15 +649,15 @@ mod tests {
     #[test]
     fn packet_deserialize_rejects_replayed_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let packet_verify = packet_sign.verifier();
+        let mut packet_verify = packet_sign.verifier();
         let encoded = Packet::Payload(vec![1, 2, 3]).serialize_packet_signed(&packet_sign)?;
 
         assert_eq!(
-            Packet::deserialize(&encoded, None, None, Some(&packet_verify))?,
+            Packet::deserialize(&encoded, None, None, Some(&mut packet_verify))?,
             Packet::Payload(vec![1, 2, 3])
         );
 
-        let err = Packet::deserialize(&encoded, None, None, Some(&packet_verify)).unwrap_err();
+        let err = Packet::deserialize(&encoded, None, None, Some(&mut packet_verify)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
         Ok(())
     }
@@ -665,15 +665,15 @@ mod tests {
     #[test]
     fn packet_deserialize_rejects_out_of_order_payload() -> Result<()> {
         let packet_sign = PacketSign::new()?;
-        let packet_verify = packet_sign.verifier();
+        let mut packet_verify = packet_sign.verifier();
         let first = Packet::Payload(vec![1]).serialize_packet_signed(&packet_sign)?;
         let second = Packet::Payload(vec![2]).serialize_packet_signed(&packet_sign)?;
 
-        let err = Packet::deserialize(&second, None, None, Some(&packet_verify)).unwrap_err();
+        let err = Packet::deserialize(&second, None, None, Some(&mut packet_verify)).unwrap_err();
         assert!(err.to_string().contains("signature verification failed"));
 
         assert_eq!(
-            Packet::deserialize(&first, None, None, Some(&packet_verify))?,
+            Packet::deserialize(&first, None, None, Some(&mut packet_verify))?,
             Packet::Payload(vec![1])
         );
         Ok(())
