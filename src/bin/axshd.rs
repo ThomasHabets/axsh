@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use agw::r#async::AGW;
+use anyhow::anyhow;
 use clap::Parser;
 use log::info;
 use tokio::io::AsyncBufReadExt;
@@ -20,9 +21,11 @@ use axsh::{
 
 #[derive(Parser)]
 struct Args {
+    /// Address of AGW server, if using AX.25.
     #[arg(long)]
     agw_addr: Option<String>,
 
+    /// Address to listen to. E.g. `M0QQQ-9` or `[::]:12345`.
     #[arg(short, long)]
     listen: Option<String>,
 
@@ -159,14 +162,16 @@ trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpi
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     init_logging(args.log_level).map_err(std::io::Error::other)?;
     let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
     let authorized_keys = Arc::new(load_authorized_keys(&args.authorized_keys_path)?);
 
     if let Some(agw_addr) = args.agw_addr {
-        let Some(my_addr) = args.listen else { panic!() };
+        let Some(my_addr) = args.listen else {
+            return Err(anyhow!("Must provide a -l listen address"));
+        };
         let agw = AGW::new(&agw_addr).await.map_err(std::io::Error::other)?;
         let my_addr = &agw::Call::from_str(&my_addr).map_err(std::io::Error::other)?;
         let mut listener = agw
@@ -200,7 +205,10 @@ async fn main() -> std::io::Result<()> {
             }
         }
     } else {
-        let listener = TcpListener::bind("0.0.0.0:12345").await?;
+        let Some(my_addr) = args.listen else {
+            return Err(anyhow!("Must provide a -l listen address"));
+        };
+        let listener = TcpListener::bind(my_addr).await?;
         loop {
             let (stream, addr) = listener.accept().await?;
             let conn_sign = Arc::clone(&conn_sign);
