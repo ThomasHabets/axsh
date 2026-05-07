@@ -37,6 +37,7 @@ client                                                  server
   |<-- ServerHello ---------------------------------------|
   |    unsigned - contents later signed in ServerComplete |
   |    fields:                                            |
+  |      version                                          |
   |      server_unique                                    |
   |      sha256(server ConnSign pubkey)                   |
   |      server PacketSign pubkey                         |
