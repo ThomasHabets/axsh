@@ -40,6 +40,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
             packet_sign.public_key_bytes(),
         ));
         let server_hello_wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
+        debug!(
+            "axsh: Received ServerHello ({} bytes)",
+            server_hello_wire.len()
+        );
         stream.write_all(&hdlc::encode(&server_hello_wire)).await?;
         stream.flush().await?;
 
@@ -54,9 +58,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                     let Packet::RequestServerPubkey = packet else {
                         unreachable!("packet type and parsed packet disagreed")
                     };
-                    debug!("axsh: Server pubkey requested");
+                    debug!("axsh: Received RequestServerPubkey ({} bytes)", wire.len());
                     let packet = Packet::ServerPubkey(ServerPubkey(conn_sign_public_key.clone()));
                     let wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
+                    debug!("axsh: Sending ServerPubkey ({} bytes)", wire.len());
                     stream.write_all(&hdlc::encode(&wire)).await?;
                     stream.flush().await?;
                 }
@@ -85,7 +90,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
             }
         };
         debug!(
-            "axsh: received ClientHello: server_unique={}, client_unique={}, conn_key={}, packet_key={} bytes",
+            "axsh: Received ClientHello ({} bytes): server_unique={}, client_unique={}, conn_key={}, packet_key={} bytes",
+            client_hello_wire.len(),
             client_hello.server_unique(),
             client_hello.unique(),
             format_sha256_digest(&client_hello.conn_sign_public_key_sha256()),
@@ -109,6 +115,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                 .map_err(std::io::Error::other)?,
         ));
         let wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
+        debug!("axsh: Sending ServerComplete ({} bytes)", wire.len());
         stream.write_all(&hdlc::encode(&wire)).await?;
         stream.flush().await?;
 

@@ -15,6 +15,26 @@ and not some secret communication channel.
 
 And yet they cannot impersonate either side.
 
+## Performance
+
+Handshakes add about 5050 bytes in total. The bulk of this is the ML-DSA
+signature, one each for end of the connection. This means that the handshake
+takes 30-40 seconds at 1200bps. This is as good as it gets while remaining
+quantum resistant.
+
+The per packet overhead is an ed25519 signature, 64 bytes. At 1200bps this is
+0.42 seconds of airtime.
+
+At 9600bps this should be 4 seconds and 53ms, respectively. We really should get
+off of this 1200bsp standard. But it's just so cheap and easy to stick an
+[AIOC](https://github.com/skuep/AIOC) in a Baofeng and get a digital terminal.
+Of course nothing precludes running something faster and yet not G3RUH through
+that hardware.
+
+While we could choose to skip quantum resistance, and get the handshake down to
+maybe under a second, what's the fun in that? Or more seriously, that added
+complexity is probably better spent on a better modem instead.
+
 ## Usage
 
 ### Generate keys

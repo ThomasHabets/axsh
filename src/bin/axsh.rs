@@ -188,8 +188,7 @@ async fn main() -> std::io::Result<()> {
             move |_server_hello| Ok(expected_server_key),
             move |server_hello: &ServerHello, server_public_key| {
                 debug!(
-                    "Verifying ServerPubkey: server_unique={}, conn_key={}",
-                    server_hello.unique(),
+                    "Verifying ServerPubkey {}",
                     format_sha256_digest(&server_hello.conn_sign_public_key_sha256())
                 );
                 if is_known_host {

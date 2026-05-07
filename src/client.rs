@@ -67,7 +67,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
             )));
         };
         debug!(
-            "axsh: Received ServerHello: server_unique={}, conn_key={}, packet_key={} bytes",
+            "axsh: Received ServerHello ({} bytes): server_unique={}, conn_key={}, packet_key={} bytes",
+            server_hello_wire.len(),
             server_hello.unique(),
             format_sha256_digest(&server_hello.conn_sign_public_key_sha256()),
             server_hello.packet_sign_public_key().len()
@@ -92,6 +93,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
             let request = Packet::RequestServerPubkey
                 .serialize(&conn_sign)
                 .map_err(std::io::Error::other)?;
+            debug!(
+                "axsh: Sending RequestServerPubkey ({} bytes)",
+                request.len()
+            );
             stream.write_all(&hdlc::encode(&request)).await?;
             stream.flush().await?;
 
@@ -104,7 +109,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
                     "expected ServerPubkey, got {packet:?}"
                 )));
             };
-            debug!("axsh: Receiver ServerPubkey");
+            debug!("axsh: Receiver ServerPubkey ({} bytes)", wire.len());
             server_pubkey.0.clone()
         };
 
@@ -141,6 +146,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
         let client_hello_wire = packet
             .serialize(&conn_sign)
             .map_err(std::io::Error::other)?;
+        debug!(
+            "axsh: Sending ClientHello ({} bytes)",
+            client_hello_wire.len()
+        );
         let frame = hdlc::encode(&client_hello_wire);
         stream.write_all(&frame).await?;
         stream.flush().await?;
@@ -152,7 +161,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
         match packet {
             Packet::ServerComplete(complete) => {
                 debug!(
-                    "axsh: received ServerComplete: signature={} bytes",
+                    "axsh: Received ServerComplete ({} bytes): signature={} bytes",
+                    wire.len(),
                     complete.signature().len()
                 );
                 let mut transcript = server_hello_wire;
