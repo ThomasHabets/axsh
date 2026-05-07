@@ -11,6 +11,8 @@ const PACKET_TYPE_SERVER_PUBKEY: u8 = 2;
 pub(crate) const PACKET_TYPE_CLIENT_HELLO: u8 = 3;
 const PACKET_TYPE_SERVER_COMPLETE: u8 = 4;
 const PACKET_TYPE_PAYLOAD: u8 = 5;
+const SERVER_HELLO_MAGIC: &[u8; 4] = b"AXSH";
+const SERVER_HELLO_VERSION: u8 = 0x00;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerHello {
@@ -313,8 +315,15 @@ fn signed_message(data: &[u8], signature_len: usize) -> Result<&[u8]> {
 /// Encode a server hello body with the server challenge and both public keys.
 #[must_use]
 fn encode_server_hello(hello: &ServerHello) -> Vec<u8> {
-    let mut out =
-        Vec::with_capacity(std::mem::size_of::<u64>() + SHA256_DIGEST_LEN + ED25519_PUBLIC_KEY_LEN);
+    let mut out = Vec::with_capacity(
+        SERVER_HELLO_MAGIC.len()
+            + 1
+            + std::mem::size_of::<u64>()
+            + SHA256_DIGEST_LEN
+            + ED25519_PUBLIC_KEY_LEN,
+    );
+    out.extend(SERVER_HELLO_MAGIC);
+    out.push(SERVER_HELLO_VERSION);
     out.extend(hello.unique.to_be_bytes());
     out.extend(hello.conn_sign_public_key_sha256);
     out.extend(hello.packet_sign_public_key);
@@ -323,7 +332,18 @@ fn encode_server_hello(hello: &ServerHello) -> Vec<u8> {
 
 /// Decode a server hello body.
 fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
-    let (unique, rest) = take_u64(data)?;
+    let (magic, rest) = take_fixed::<{ SERVER_HELLO_MAGIC.len() }>(data)?;
+    ensure!(
+        magic == *SERVER_HELLO_MAGIC,
+        "server hello magic {magic:?} != {SERVER_HELLO_MAGIC:?}"
+    );
+    let (version, rest) = take_fixed::<1>(rest)?;
+    ensure!(
+        version[0] == SERVER_HELLO_VERSION,
+        "unsupported server hello version {:#04x}",
+        version[0]
+    );
+    let (unique, rest) = take_u64(rest)?;
     let (conn_sign_public_key_sha256, rest) = take_fixed::<SHA256_DIGEST_LEN>(rest)?;
     let (packet_sign_public_key, rest) = take_fixed::<ED25519_PUBLIC_KEY_LEN>(rest)?;
     ensure!(rest.is_empty(), "server hello has trailing bytes");
@@ -610,7 +630,19 @@ mod tests {
     fn packet_deserialize_rejects_truncated_hello() {
         let err = Packet::deserialize(&[PACKET_TYPE_SERVER_HELLO, 1, 2, 3], None, None, None)
             .unwrap_err();
-        assert!(err.to_string().contains("expected at least 8 bytes"));
+        assert!(err.to_string().contains("expected at least 4 bytes"));
+    }
+
+    #[test]
+    fn packet_deserialize_rejects_invalid_server_hello_header() -> Result<()> {
+        let conn_sign = ConnSign::new()?;
+        let packet_sign = PacketSign::new()?;
+        let hello = test_server_hello(&conn_sign, &packet_sign)?;
+        let mut encoded = Packet::ServerHello(hello).serialize_unsigned()?;
+        encoded[1] = b'B';
+        let err = Packet::deserialize(&encoded, None, None, None).unwrap_err();
+        assert!(err.to_string().contains("server hello magic"));
+        Ok(())
     }
 
     #[test]
