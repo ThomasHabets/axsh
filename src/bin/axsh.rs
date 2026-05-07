@@ -220,6 +220,9 @@ async fn main() -> std::io::Result<()> {
                         let mut buf = line.as_bytes().to_vec();
                         buf.push(b'\n');
                         client.write_all(&buf).await?;
+                        if false {
+                            client.keepalive().await?;
+                        }
                         client.flush().await?;
                     } else {
                         stdin_open = false;

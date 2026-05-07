@@ -194,6 +194,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
     pub fn into_inner(self) -> T {
         self.transport.into_inner()
     }
+
+    /// Queue an empty payload packet as a keepalive.
+    pub async fn keepalive(&mut self) -> Result<(), std::io::Error> {
+        self.transport.keepalive().await
+    }
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for ClientStream<T> {
@@ -300,6 +305,8 @@ mod tests {
         assert_eq!(received, b"server payload two");
 
         client.write_all(b"client payload one").await?;
+        client.flush().await?;
+        client.keepalive().await?;
         client.flush().await?;
         client.write_all(b"client payload two").await?;
         client.flush().await?;

@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
+use log::debug;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{Packet, PacketSign, PacketVerify, hdlc};
@@ -39,6 +40,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
     /// Return the underlying stream.
     pub(crate) fn into_inner(self) -> T {
         self.stream
+    }
+
+    /// Queue an empty payload packet as a keepalive.
+    pub(crate) async fn keepalive(&mut self) -> std::io::Result<()> {
+        std::future::poll_fn(|cx| self.poll_queue_keepalive(cx)).await
     }
 
     pub(crate) fn poll_read_payload(
@@ -111,10 +117,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
                 .map_err(std::io::Error::other)?;
             match packet {
                 Packet::Payload(data) => {
-                    log::debug!("received Payload: {} bytes", data.len());
                     if data.is_empty() {
+                        debug!("axsh: Received keepalive (0 byte data)");
                         continue;
                     }
+                    debug!("axsh: Received Payload: {} bytes", data.len());
                     self.read_buffer = data;
                     self.read_offset = 0;
                     return Poll::Ready(Ok(true));
@@ -145,6 +152,17 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
             self.write_buffer.clear();
             self.write_offset = 0;
         }
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_queue_keepalive(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        ready!(self.poll_drain_write_buffer(cx))?;
+        let packet = Packet::Payload(vec![]);
+        let wire = packet
+            .serialize_packet_signed(&self.packet_sign)
+            .map_err(std::io::Error::other)?;
+        self.write_buffer = hdlc::encode(&wire);
+        self.write_offset = 0;
         Poll::Ready(Ok(()))
     }
 }

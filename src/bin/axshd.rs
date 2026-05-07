@@ -135,7 +135,11 @@ async fn handle_connection(
     conn_sign: Arc<ConnSign>,
     authorized_keys: Arc<HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>>,
 ) -> std::io::Result<()> {
-    let stream = ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
+    let mut stream =
+        ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
+    if false {
+        stream.keepalive().await?;
+    }
     let (read, mut write) = tokio::io::split(stream);
     let mut linereader = tokio::io::BufReader::new(read).lines();
 

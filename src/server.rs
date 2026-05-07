@@ -130,6 +130,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
     pub fn into_inner(self) -> T {
         self.transport.into_inner()
     }
+
+    /// Queue an empty payload packet as a keepalive.
+    pub async fn keepalive(&mut self) -> Result<(), std::io::Error> {
+        self.transport.keepalive().await
+    }
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for ServerStream<T> {
