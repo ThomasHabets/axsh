@@ -8,6 +8,7 @@ const ESCAPE: u8 = 0x7d;
 const ESCAPE_XOR: u8 = 0x20;
 const INITIAL_FCS: u16 = 0xffff;
 const FCS_POLY: u16 = 0x8408;
+const MAX_FRAME_SIZE: usize = 64 * 1024;
 
 pub(crate) struct AsyncFrameReader {
     frame: Vec<u8>,
@@ -57,7 +58,7 @@ impl AsyncFrameReader {
                         continue;
                     }
 
-                    self.frame.push(byte);
+                    push_frame_byte(&mut self.frame, byte)?;
                     if byte == FLAG {
                         self.in_frame = false;
                         return Poll::Ready(Ok(Some(std::mem::take(&mut self.frame))));
@@ -82,6 +83,7 @@ pub fn encode(payload: &[u8]) -> Vec<u8> {
 
 /// Decode an HDLC frame, removing byte-stuffing and validating the CRC-16 FCS.
 pub fn decode(frame: &[u8]) -> Result<Vec<u8>> {
+    ensure!(frame.len() <= MAX_FRAME_SIZE, "frame too large");
     ensure!(frame.len() >= 4, "frame too short");
     ensure!(frame.first() == Some(&FLAG), "frame missing opening flag");
     ensure!(frame.last() == Some(&FLAG), "frame missing closing flag");
@@ -139,7 +141,7 @@ pub fn read_frame<R: std::io::Read>(reader: &mut R) -> std::io::Result<Option<Ve
             continue;
         }
 
-        frame.push(byte);
+        push_frame_byte(&mut frame, byte)?;
         if byte == FLAG {
             return Ok(Some(frame));
         }
@@ -170,6 +172,17 @@ fn escape_into(bytes: &[u8], out: &mut Vec<u8>) {
             byte => out.push(byte),
         }
     }
+}
+
+fn push_frame_byte(frame: &mut Vec<u8>, byte: u8) -> std::io::Result<()> {
+    if frame.len() >= MAX_FRAME_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("HDLC frame exceeds maximum size of {MAX_FRAME_SIZE} bytes"),
+        ));
+    }
+    frame.push(byte);
+    Ok(())
 }
 
 fn frame_fcs(payload: &[u8]) -> u16 {
@@ -233,6 +246,13 @@ mod tests {
     }
 
     #[test]
+    fn reject_oversized_frame_in_decode() {
+        let frame = vec![FLAG; MAX_FRAME_SIZE + 1];
+        let err = decode(&frame).unwrap_err();
+        assert!(err.to_string().contains("frame too large"));
+    }
+
+    #[test]
     fn read_frame_reads_one_frame() -> std::io::Result<()> {
         let frame = encode(b"payload");
         let mut reader = std::io::Cursor::new(frame);
@@ -246,5 +266,16 @@ mod tests {
         let mut reader = std::io::Cursor::new(Vec::<u8>::new());
         assert!(read_frame(&mut reader)?.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn read_frame_rejects_oversized_frame() {
+        let mut frame = vec![FLAG];
+        frame.extend(std::iter::repeat_n(0u8, MAX_FRAME_SIZE));
+        frame.push(FLAG);
+
+        let err = read_frame(&mut std::io::Cursor::new(frame)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("maximum size"));
     }
 }
