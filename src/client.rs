@@ -105,7 +105,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
                 )));
             };
             debug!("axsh: Receiver ServerPubkey");
-            server_pubkey.conn_sign_public_key().to_vec()
+            server_pubkey.0.clone()
         };
 
         // Confirm that we actually got the public key mentioned in `ServerHello`.

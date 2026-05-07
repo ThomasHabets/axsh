@@ -52,25 +52,7 @@ impl ServerHello {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServerPubkey {
-    conn_sign_public_key: Vec<u8>,
-}
-
-impl ServerPubkey {
-    /// Create a server-pubkey packet body from the full bundled `ConnSign` public key bytes.
-    #[must_use]
-    pub fn new(conn_sign_public_key: Vec<u8>) -> Self {
-        Self {
-            conn_sign_public_key,
-        }
-    }
-
-    /// Return the server's bundled `ConnSign` public key bytes.
-    #[must_use]
-    pub fn conn_sign_public_key(&self) -> &[u8] {
-        &self.conn_sign_public_key
-    }
-}
+pub struct ServerPubkey(pub(crate) Vec<u8>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientHello {
@@ -203,10 +185,9 @@ impl Packet {
             Packet::RequestServerPubkey => Ok(vec![PACKET_TYPE_REQUEST_SERVER_PUBKEY]),
             Packet::ServerPubkey(server_pubkey) => {
                 debug!("ENcoding server pubkey");
-                let body = encode_server_pubkey(server_pubkey);
-                let mut out = Vec::with_capacity(1 + body.len());
+                let mut out = Vec::with_capacity(1 + server_pubkey.0.len());
                 out.push(PACKET_TYPE_SERVER_PUBKEY);
-                out.extend(body);
+                out.extend(&server_pubkey.0);
                 Ok(out)
             }
             Packet::ClientHello(hello) => {
@@ -239,7 +220,7 @@ impl Packet {
                 ensure!(rest.is_empty(), "request server pubkey has trailing bytes");
                 Ok(Packet::RequestServerPubkey)
             }
-            PACKET_TYPE_SERVER_PUBKEY => Ok(Packet::ServerPubkey(decode_server_pubkey(rest)?)),
+            PACKET_TYPE_SERVER_PUBKEY => Ok(Packet::ServerPubkey(ServerPubkey(rest.to_vec()))),
             PACKET_TYPE_CLIENT_HELLO => {
                 let hello = Self::peek_client_hello(data)?;
                 let verifier = conn_verifier.ok_or_else(|| anyhow!("missing conn verifier"))?;
@@ -332,27 +313,6 @@ fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
     ))
 }
 
-/// Encode a server-pubkey body with the full bundled `ConnSign` public key.
-#[must_use]
-fn encode_server_pubkey(server_pubkey: &ServerPubkey) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        len_varint_len(server_pubkey.conn_sign_public_key.len())
-            + server_pubkey.conn_sign_public_key.len(),
-    );
-    // TODO: remove this prefix
-    encode_len(server_pubkey.conn_sign_public_key.len(), &mut out);
-    out.extend(&server_pubkey.conn_sign_public_key);
-    out
-}
-
-/// Decode a server-pubkey body.
-fn decode_server_pubkey(data: &[u8]) -> Result<ServerPubkey> {
-    // TODO: remove this prefix
-    let (conn_sign_public_key, rest) = take_len_prefixed(data)?;
-    ensure!(rest.is_empty(), "server pubkey has trailing bytes");
-    Ok(ServerPubkey::new(conn_sign_public_key))
-}
-
 /// Encode a client hello body with both challenges and both public keys.
 #[must_use]
 fn encode_client_hello(hello: &ClientHello) -> Vec<u8> {
@@ -420,69 +380,6 @@ fn take_fixed<const N: usize>(data: &[u8]) -> Result<([u8; N], &[u8])> {
         .try_into()
         .map_err(|_| anyhow!("failed to decode fixed-width bytes"))?;
     Ok((bytes, rest))
-}
-
-/// Take a length-prefixed byte vector and return the remaining bytes.
-fn take_len_prefixed(data: &[u8]) -> Result<(Vec<u8>, &[u8])> {
-    let (len, rest) = decode_len(data)?;
-    ensure!(
-        rest.len() >= len,
-        "length-prefixed field truncated: {} < {}",
-        rest.len(),
-        len
-    );
-    let (field, rest) = rest.split_at(len);
-    Ok((field.to_vec(), rest))
-}
-
-/// Encode a length with a tight base-128 varint.
-fn encode_len(len: usize, out: &mut Vec<u8>) {
-    let mut value = len;
-    loop {
-        let mut byte = u8::try_from(value & 0x7f).expect("impossible");
-        value >>= 7;
-        if value != 0 {
-            byte |= 0x80;
-        }
-        out.push(byte);
-        if value == 0 {
-            break;
-        }
-    }
-}
-
-/// Decode the base-128 varint used by length-prefixed fields.
-fn decode_len(data: &[u8]) -> Result<(usize, &[u8])> {
-    let mut value = 0usize;
-    let mut shift = 0usize;
-    for (idx, byte) in data.iter().copied().enumerate() {
-        let chunk = usize::from(byte & 0x7f);
-        let shifted = chunk
-            .checked_shl(u32::try_from(shift)?)
-            .ok_or_else(|| anyhow!("length varint overflow"))?;
-        value = value
-            .checked_add(shifted)
-            .ok_or_else(|| anyhow!("length varint overflow"))?;
-        if byte & 0x80 == 0 {
-            return Ok((value, &data[idx + 1..]));
-        }
-        shift += 7;
-        if shift >= usize::BITS as usize {
-            bail!("length varint overflow");
-        }
-    }
-    bail!("truncated length varint")
-}
-
-/// Calculate the encoded varint size so serialization can reserve once.
-#[must_use]
-const fn len_varint_len(mut len: usize) -> usize {
-    let mut out = 1;
-    while len >= 0x80 {
-        len >>= 7;
-        out += 1;
-    }
-    out
 }
 
 #[cfg(test)]
@@ -584,7 +481,7 @@ mod tests {
     #[test]
     fn packet_round_trip_server_pubkey() -> Result<()> {
         let conn_sign = ConnSign::new()?;
-        let packet = Packet::ServerPubkey(ServerPubkey::new(conn_sign.public_key_bytes()?));
+        let packet = Packet::ServerPubkey(ServerPubkey(conn_sign.public_key_bytes()?.clone()));
         let encoded = packet.serialize(&conn_sign)?;
         assert_eq!(Packet::deserialize(&encoded, None, None)?, packet);
         Ok(())

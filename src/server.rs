@@ -55,8 +55,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                         unreachable!("packet type and parsed packet disagreed")
                     };
                     debug!("axsh: Server pubkey requested");
-                    let packet =
-                        Packet::ServerPubkey(ServerPubkey::new(conn_sign_public_key.clone()));
+                    let packet = Packet::ServerPubkey(ServerPubkey(conn_sign_public_key.clone()));
                     let wire = packet.serialize(conn_sign).map_err(std::io::Error::other)?;
                     stream.write_all(&hdlc::encode(&wire)).await?;
                     stream.flush().await?;
