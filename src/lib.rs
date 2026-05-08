@@ -3,9 +3,9 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::unnecessary_debug_formatting)]
 
-// TODO: replace with thiserror.
 use std::cell::Cell;
 
+// TODO: replace with thiserror.
 use anyhow::{Context, Result, bail};
 use aws_lc_rs::{
     digest,
