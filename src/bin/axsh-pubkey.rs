@@ -1,5 +1,9 @@
+//! axsh public key extractor.
 use clap::Parser;
 
+/// axsh public key extractor.
+///
+/// Extracts the public key from a long lived on disk `ConnSign` key file.
 #[derive(Parser)]
 #[command(version)]
 struct Args {

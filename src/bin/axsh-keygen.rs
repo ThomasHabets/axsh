@@ -1,6 +1,11 @@
+//! axsh key generator.
 #![allow(clippy::unnecessary_debug_formatting)]
 use clap::Parser;
 
+/// axsh key generator.
+///
+/// Generates the long lives `ConnSign` key that's a combination of ML-DSA and
+/// ed25519.
 #[derive(Parser)]
 #[command(version)]
 struct Args {

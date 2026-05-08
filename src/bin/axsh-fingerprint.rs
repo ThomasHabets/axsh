@@ -1,6 +1,10 @@
+//! axsh public key fingerprinter.
 #![allow(clippy::unnecessary_debug_formatting)]
 use clap::Parser;
 
+/// axsh public key fingerprinter.
+///
+/// Takes a public key and prints the checksum of it.
 #[derive(Parser)]
 #[command(version)]
 struct Args {

@@ -1,3 +1,4 @@
+//! axsh secure shell server.
 #![allow(clippy::unnecessary_debug_formatting)]
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -20,6 +21,7 @@ use axsh::{
     sha256_bytes,
 };
 
+/// axsh secure shell server.
 #[derive(Parser)]
 #[command(version)]
 struct Args {

@@ -1,3 +1,4 @@
+//! axsh secure shell client.
 #![allow(clippy::unnecessary_debug_formatting)]
 
 use std::collections::HashMap;
@@ -13,6 +14,10 @@ use axsh::{
     format_sha256_digest, format_sha256_fingerprint, init_logging, parse_known_host,
 };
 
+/// axsh secure shell client.
+///
+/// Connects to a server securing authentication and integrity, but not
+/// encrypted or obfuscated (because it's an amateur radio license requirement).
 #[derive(Parser)]
 #[command(version)]
 struct Args {
