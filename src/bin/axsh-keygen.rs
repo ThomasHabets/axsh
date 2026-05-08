@@ -2,6 +2,7 @@
 use clap::Parser;
 
 #[derive(Parser)]
+#[command(version)]
 struct Args {
     output: std::path::PathBuf,
 }

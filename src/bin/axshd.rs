@@ -21,6 +21,7 @@ use axsh::{
 };
 
 #[derive(Parser)]
+#[command(version)]
 struct Args {
     /// Address of AGW server, if using AX.25.
     #[arg(long)]

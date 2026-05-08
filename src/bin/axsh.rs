@@ -14,6 +14,7 @@ use axsh::{
 };
 
 #[derive(Parser)]
+#[command(version)]
 struct Args {
     /// Address to connect to.
     #[arg()]
