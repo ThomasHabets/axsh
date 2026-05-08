@@ -19,8 +19,9 @@ struct Args {
     #[arg()]
     addr: String,
 
+    /// Source callsign to use. E.g. M0QQQ-1.
     #[arg(short)]
-    src: String,
+    src: Option<String>,
 
     #[arg(long)]
     agw_addr: Option<String>,
@@ -166,7 +167,13 @@ async fn main() -> std::io::Result<()> {
     let agw;
     let stream: Box<dyn AsyncReadWrite> = if let Some(agw_addr) = args.agw_addr {
         agw = AGW::new(&agw_addr).await.map_err(std::io::Error::other)?;
-        let src = &agw::Call::from_str(&args.src).map_err(std::io::Error::other)?;
+        let Some(src) = args.src else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "For AGW streams -s must be provided",
+            ));
+        };
+        let src = &agw::Call::from_str(&src).map_err(std::io::Error::other)?;
         let dst = &agw::Call::from_str(&args.addr).map_err(std::io::Error::other)?;
         Box::new(
             agw.connect(agw::Port(0), agw::Pid(0xF0), src, dst, &[])
