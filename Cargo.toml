@@ -10,7 +10,7 @@ description = "Amateur radio compliant secure shell"
 keywords = ["radio"]
 
 [dependencies]
-agw = "0.4.0"
+agw = "0.4.3"
 #agw = { path = "../agw" }
 anyhow = "1.0.102"
 aws-lc-rs = { version = "1.16.3", features = ["unstable"] }
