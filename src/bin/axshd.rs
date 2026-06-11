@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
             .await
             .map_err(std::io::Error::other)?;
         loop {
-            let mut stream = listener.accept().await.unwrap();
+            let mut stream = listener.accept().await.map_err(std::io::Error::other)?;
             let addr = stream.dst().clone();
             info!("Got connection from {addr}");
             if false {
