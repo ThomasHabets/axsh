@@ -40,6 +40,36 @@ pub const CONN_AUTHORIZED_KEY_KIND: &str = "mldsa-ed25519";
 // TODO: Add ability of client to send keepalives.
 pub const MAX_CONNECTION_IDLE: std::time::Duration = std::time::Duration::from_hours(1);
 
+/// Default maximum time allowed for a client/server handshake to complete.
+///
+/// Keep these in sync!
+pub const DEFAULT_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
+pub const DEFAULT_HANDSHAKE_TIMEOUT_STR: &str = "5m";
+
+/// Helper function for use with clap to parse command line durations.
+///
+/// Bare numbers are seconds. The suffixes `ms`, `s`, `m`, and `h` are also
+/// accepted.
+pub fn parse_duration(arg: &str) -> anyhow::Result<std::time::Duration> {
+    if let Some(seconds) = arg.strip_suffix('s') {
+        return Ok(std::time::Duration::from_secs(seconds.parse()?));
+    }
+    if let Some(minutes) = arg.strip_suffix('m') {
+        return Ok(std::time::Duration::from_mins(minutes.parse()?));
+    }
+    if let Some(hours) = arg.strip_suffix('h') {
+        return Ok(std::time::Duration::from_hours(hours.parse()?));
+    }
+    Ok(std::time::Duration::from_secs(arg.parse()?))
+}
+
+pub(crate) fn handshake_timeout_error(timeout: std::time::Duration) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("handshake timed out after {timeout:?}"),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum LogLevel {
     Error,

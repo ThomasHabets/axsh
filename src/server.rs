@@ -22,6 +22,35 @@ pub struct ServerStream<T> {
 impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
     /// Complete the server handshake over `stream`.
     pub async fn new(
+        stream: T,
+        conn_sign: &ConnSign,
+        authorized_keys: &HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>,
+    ) -> std::io::Result<Self> {
+        Self::new_with_handshake_timeout(
+            stream,
+            conn_sign,
+            authorized_keys,
+            crate::DEFAULT_HANDSHAKE_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Complete the server handshake over `stream` with a caller-provided timeout.
+    pub async fn new_with_handshake_timeout(
+        stream: T,
+        conn_sign: &ConnSign,
+        authorized_keys: &HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>,
+        handshake_timeout: std::time::Duration,
+    ) -> std::io::Result<Self> {
+        tokio::time::timeout(
+            handshake_timeout,
+            Self::new_inner(stream, conn_sign, authorized_keys),
+        )
+        .await
+        .map_err(|_| crate::handshake_timeout_error(handshake_timeout))?
+    }
+
+    async fn new_inner(
         mut stream: T,
         conn_sign: &ConnSign,
         authorized_keys: &HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>,

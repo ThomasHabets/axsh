@@ -44,6 +44,10 @@ struct Args {
     /// Log level for stderr diagnostics.
     #[arg(short = 'v', long = "log-level", value_enum, default_value = "info")]
     log_level: LogLevel,
+
+    /// Handshake timeout in seconds.
+    #[arg(long = "handshake-timeout", default_value = axsh::DEFAULT_HANDSHAKE_TIMEOUT_STR, value_parser = axsh::parse_duration)]
+    handshake_timeout_secs: std::time::Duration,
 }
 
 /// Load authorized keys from file. One typed pubkey per line.
@@ -142,9 +146,15 @@ async fn handle_connection(
     stream: impl AsyncReadWrite,
     conn_sign: Arc<ConnSign>,
     authorized_keys: Arc<HashMap<[u8; SHA256_DIGEST_LEN], Vec<u8>>>,
+    handshake_timeout: std::time::Duration,
 ) -> std::io::Result<()> {
-    let mut stream =
-        ServerStream::new(stream, conn_sign.as_ref(), authorized_keys.as_ref()).await?;
+    let mut stream = ServerStream::new_with_handshake_timeout(
+        stream,
+        conn_sign.as_ref(),
+        authorized_keys.as_ref(),
+        handshake_timeout,
+    )
+    .await?;
     if false {
         stream.keepalive().await?;
     }
@@ -170,6 +180,7 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> AsyncReadWr
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     init_logging(args.log_level).map_err(std::io::Error::other)?;
+    let handshake_timeout = args.handshake_timeout_secs;
     let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
     let authorized_keys = Arc::new(load_authorized_keys(&args.authorized_keys_path)?);
 
@@ -205,7 +216,9 @@ async fn main() -> anyhow::Result<()> {
             let conn_sign = Arc::clone(&conn_sign);
             let authorized_keys = Arc::clone(&authorized_keys);
 
-            if let Err(e) = handle_connection(stream, conn_sign, authorized_keys).await {
+            if let Err(e) =
+                handle_connection(stream, conn_sign, authorized_keys, handshake_timeout).await
+            {
                 log::error!("connection {addr} error: {e}");
             }
         }
@@ -220,7 +233,9 @@ async fn main() -> anyhow::Result<()> {
             let authorized_keys = Arc::clone(&authorized_keys);
 
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, conn_sign, authorized_keys).await {
+                if let Err(e) =
+                    handle_connection(stream, conn_sign, authorized_keys, handshake_timeout).await
+                {
                     log::error!("connection {addr} error: {e}");
                 }
             });

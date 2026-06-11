@@ -45,8 +45,53 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ClientStream<T> {
     ///
     /// This callback doesn't need to check that the key returned by
     /// `lookup_server_pubkey` is actually the one used.
-    #[allow(clippy::too_many_lines)]
     pub async fn new_with_server_pubkey_lookup<Lookup, AcceptCheck>(
+        stream: T,
+        conn_sign: ConnSign,
+        lookup_server_pubkey: Lookup,
+        accept_server_pubkey: AcceptCheck,
+    ) -> std::io::Result<Self>
+    where
+        Lookup: FnOnce(&ServerHello) -> std::io::Result<Option<Vec<u8>>>,
+        AcceptCheck: FnOnce(&ServerHello, &[u8]) -> std::io::Result<()>,
+    {
+        Self::new_with_server_pubkey_lookup_timeout(
+            stream,
+            conn_sign,
+            lookup_server_pubkey,
+            accept_server_pubkey,
+            crate::DEFAULT_HANDSHAKE_TIMEOUT,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub async fn new_with_server_pubkey_lookup_timeout<Lookup, AcceptCheck>(
+        stream: T,
+        conn_sign: ConnSign,
+        lookup_server_pubkey: Lookup,
+        accept_server_pubkey: AcceptCheck,
+        handshake_timeout: std::time::Duration,
+    ) -> std::io::Result<Self>
+    where
+        Lookup: FnOnce(&ServerHello) -> std::io::Result<Option<Vec<u8>>>,
+        AcceptCheck: FnOnce(&ServerHello, &[u8]) -> std::io::Result<()>,
+    {
+        tokio::time::timeout(
+            handshake_timeout,
+            Self::new_with_server_pubkey_lookup_inner(
+                stream,
+                conn_sign,
+                lookup_server_pubkey,
+                accept_server_pubkey,
+            ),
+        )
+        .await
+        .map_err(|_| crate::handshake_timeout_error(handshake_timeout))?
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn new_with_server_pubkey_lookup_inner<Lookup, AcceptCheck>(
         mut stream: T,
         conn_sign: ConnSign,
         lookup_server_pubkey: Lookup,
@@ -235,6 +280,7 @@ mod tests {
     use crate::{ConnSign, ServerStream, sha256_bytes};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn authorized_keys(conn_sign: &ConnSign) -> std::io::Result<HashMap<[u8; 32], Vec<u8>>> {
@@ -353,6 +399,46 @@ mod tests {
             server_result.is_err(),
             "server unexpectedly completed handshake"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_stream_handshake_times_out() -> std::io::Result<()> {
+        let client_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
+        let (_server_stream, client_stream) = tokio::io::duplex(4096);
+
+        let result = ClientStream::new_with_server_pubkey_lookup_timeout(
+            client_stream,
+            client_conn_sign,
+            |_server_hello| Ok(None),
+            |_server_hello, _key| Ok(()),
+            Duration::from_millis(1),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("client handshake unexpectedly completed")
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_stream_handshake_times_out() -> std::io::Result<()> {
+        let server_conn_sign = ConnSign::new().map_err(std::io::Error::other)?;
+        let authorized_keys = HashMap::new();
+        let (server_stream, _client_stream) = tokio::io::duplex(4096);
+
+        let result = ServerStream::new_with_handshake_timeout(
+            server_stream,
+            &server_conn_sign,
+            &authorized_keys,
+            Duration::from_millis(1),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("server handshake unexpectedly completed")
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         Ok(())
     }
 

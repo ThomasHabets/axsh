@@ -43,6 +43,10 @@ struct Args {
     /// Log level for stderr diagnostics.
     #[arg(short = 'v', long = "log-level", value_enum, default_value = "info")]
     log_level: LogLevel,
+
+    /// Handshake timeout in seconds.
+    #[arg(long = "handshake-timeout", default_value = axsh::DEFAULT_HANDSHAKE_TIMEOUT_STR, value_parser = axsh::parse_duration)]
+    handshake_timeout: std::time::Duration,
 }
 
 /// Load known-hosts entries from file.
@@ -211,7 +215,7 @@ async fn main() -> std::io::Result<()> {
         let known_hosts_path = args.known_hosts_path.clone();
         let expected_server_key = known_hosts.get(&args.addr).cloned();
         let is_known_host = expected_server_key.is_some();
-        ClientStream::new_with_server_pubkey_lookup(
+        ClientStream::new_with_server_pubkey_lookup_timeout(
             stream,
             conn_sign,
             move |_server_hello| Ok(expected_server_key),
@@ -227,6 +231,7 @@ async fn main() -> std::io::Result<()> {
                     confirm_and_add_known_host(&known_hosts_path, &addr, server_public_key)
                 }
             },
+            args.handshake_timeout,
         )
     }
     .await?;
