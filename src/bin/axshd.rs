@@ -59,7 +59,7 @@ fn load_authorized_keys(
     let mut keys = HashMap::new();
     for (lineno, line) in contents.lines().enumerate() {
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let key = parse_authorized_conn_key(line).map_err(|e| {
@@ -245,8 +245,11 @@ mod tests {
     #[test]
     fn load_authorized_keys_parses_base64_lines() {
         let path = unique_test_path("authorized");
-        std::fs::write(&path, "mldsa-ed25519 Zg==\n\nmldsa-ed25519 Zm9v\n")
-            .expect("failed to write allowlist");
+        std::fs::write(
+            &path,
+            "# comment\nmldsa-ed25519 Zg==\n\nmldsa-ed25519 Zm9v\n",
+        )
+        .expect("failed to write allowlist");
 
         let keys = load_authorized_keys(&path).expect("failed to load allowlist");
         let expected = HashMap::from([
