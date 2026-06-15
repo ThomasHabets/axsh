@@ -3,6 +3,8 @@
 Library and binaries for creating secure yet compliant amateur radio
 connections.
 
+<https://github.com/ThomasHabets/axsh>
+
 Servers and clients have a long term dual sign ML-DSA/ed25519 key, which is
 post-quantum safe (with current state of the art fallback). Then for the actual
 connection both sides generate a temporary ed25519 key.
@@ -134,3 +136,8 @@ $ axshd -k server.key -a authorized_keys
 # and in another terminal:
 $ axsh -k client.key -s M0QQQ-1 localhost:12345
 ```
+
+## Memory safety
+
+This code depends on aws-lc-sys, which in turn is written in C. It should be
+possible to replace it with the ml-dsa, sha2, and ed25519 crates.
