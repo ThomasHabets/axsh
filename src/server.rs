@@ -6,8 +6,8 @@ use log::debug;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::{
-    ClientHello, ConnSign, ConnVerify, Packet, PacketSign, PacketVerify, SHA256_DIGEST_LEN,
-    ServerComplete, ServerHello, ServerPubkey, format_sha256_digest, hdlc,
+    ClientHello, ConnSign, Packet, PacketSign, PacketVerify, SHA256_DIGEST_LEN, ServerComplete,
+    ServerHello, ServerPubkey, format_sha256_digest, hdlc,
     packet::{PACKET_TYPE_CLIENT_HELLO, PACKET_TYPE_REQUEST_SERVER_PUBKEY},
     random_u64, sha256_bytes,
     transport::PayloadStream,
@@ -70,7 +70,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
         ));
         let server_hello_wire = packet.serialize_unsigned().map_err(std::io::Error::other)?;
         debug!(
-            "axsh: Received ServerHello ({} bytes)",
+            "axshd: Sending ServerHello ({} bytes)",
             server_hello_wire.len()
         );
         stream.write_all(&hdlc::encode(&server_hello_wire)).await?;
@@ -82,8 +82,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
             let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
             match Packet::peek_type(&wire).map_err(std::io::Error::other)? {
                 PACKET_TYPE_REQUEST_SERVER_PUBKEY => {
-                    let packet = Packet::deserialize(&wire, None, None, None)
-                        .map_err(std::io::Error::other)?;
+                    let packet =
+                        Packet::deserialize(&wire, None, None, None, conn_sign.quantum_insecure)
+                            .map_err(std::io::Error::other)?;
                     let Packet::RequestServerPubkey = packet else {
                         unreachable!("packet type and parsed packet disagreed")
                     };
@@ -95,7 +96,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                     stream.flush().await?;
                 }
                 PACKET_TYPE_CLIENT_HELLO => {
-                    let peeked = Packet::peek_client_hello(&wire).map_err(std::io::Error::other)?;
+                    let peeked = Packet::peek_client_hello(&wire, conn_sign.quantum_insecure)
+                        .map_err(std::io::Error::other)?;
                     let Some(client_conn_sign_public_key) =
                         authorized_keys.get(&peeked.conn_sign_public_key_sha256())
                     else {
@@ -103,10 +105,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin> ServerStream<T> {
                             "client ConnSign key is not authorized",
                         ));
                     };
-                    let client_conn_verify = ConnVerify::new(client_conn_sign_public_key.clone());
-                    let packet =
-                        Packet::deserialize(&wire, Some(unique), Some(&client_conn_verify), None)
-                            .map_err(std::io::Error::other)?;
+                    let client_conn_verify =
+                        conn_sign.peer_verifier(client_conn_sign_public_key.as_slice());
+                    let packet = Packet::deserialize(
+                        &wire,
+                        Some(unique),
+                        Some(&client_conn_verify),
+                        None,
+                        conn_sign.quantum_insecure,
+                    )
+                    .map_err(std::io::Error::other)?;
                     let Packet::ClientHello(client_hello) = packet else {
                         unreachable!("packet type and parsed packet disagreed")
                     };

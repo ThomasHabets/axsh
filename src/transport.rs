@@ -113,8 +113,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> PayloadStream<T> {
                 return Poll::Ready(Ok(false));
             };
             let wire = hdlc::decode(&frame).map_err(std::io::Error::other)?;
-            let packet = Packet::deserialize(&wire, None, None, Some(&mut self.peer_packet_verify))
-                .map_err(std::io::Error::other)?;
+            let packet =
+                Packet::deserialize(&wire, None, None, Some(&mut self.peer_packet_verify), false)
+                    .map_err(std::io::Error::other)?;
             match packet {
                 Packet::Payload(data) => {
                     if data.is_empty() {

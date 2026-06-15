@@ -48,6 +48,10 @@ struct Args {
     /// Handshake timeout in seconds.
     #[arg(long = "handshake-timeout", default_value = axsh::DEFAULT_HANDSHAKE_TIMEOUT_STR, value_parser = axsh::parse_duration)]
     handshake_timeout_secs: std::time::Duration,
+
+    /// Post Quantum insecure.
+    #[arg(long)]
+    quantum_insecure: bool,
 }
 
 /// Load authorized keys from file. One typed pubkey per line.
@@ -181,7 +185,12 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     init_logging(args.log_level).map_err(std::io::Error::other)?;
     let handshake_timeout = args.handshake_timeout_secs;
-    let conn_sign = Arc::new(ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?);
+    let conn_sign = Arc::new(
+        ConnSign::builder()
+            .quantum_insecure(args.quantum_insecure)
+            .from_file(&args.key_path)
+            .map_err(std::io::Error::other)?,
+    );
     let authorized_keys = Arc::new(load_authorized_keys(&args.authorized_keys_path)?);
 
     if let Some(agw_addr) = args.agw_addr {

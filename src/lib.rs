@@ -80,8 +80,12 @@ pub enum LogLevel {
 }
 
 #[must_use]
-pub(crate) fn conn_signature_len() -> usize {
-    ML_DSA_44_SIGNING.signature_len() + ED25519_SIGNATURE_LEN
+pub(crate) fn conn_signature_len(quantum_insecure: bool) -> usize {
+    if quantum_insecure {
+        ED25519_SIGNATURE_LEN
+    } else {
+        ML_DSA_44_SIGNING.signature_len() + ED25519_SIGNATURE_LEN
+    }
 }
 
 pub(crate) fn random_u64() -> std::io::Result<u64> {
@@ -210,11 +214,30 @@ impl PacketSign {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct ConnSignBuilder {
+    quantum_insecure: bool,
+}
+
+impl ConnSignBuilder {
+    pub fn from_file(&self, path: impl AsRef<std::path::Path>) -> Result<ConnSign> {
+        let mut cs = ConnSign::from_file(path)?;
+        cs.quantum_insecure = self.quantum_insecure;
+        Ok(cs)
+    }
+    #[must_use]
+    pub fn quantum_insecure(mut self, v: bool) -> Self {
+        self.quantum_insecure = v;
+        self
+    }
+}
+
 pub struct ConnSign {
     ml_dsa_key_pair: PqdsaKeyPair,
     ed25519_key_pair: Ed25519KeyPair,
     ml_dsa_pkcs8: Vec<u8>,
     ed25519_pkcs8: Vec<u8>,
+    quantum_insecure: bool,
 }
 
 impl ConnSign {
@@ -232,7 +255,13 @@ impl ConnSign {
             ed25519_key_pair,
             ml_dsa_pkcs8,
             ed25519_pkcs8,
+            quantum_insecure: false,
         })
+    }
+
+    #[must_use]
+    pub fn builder() -> ConnSignBuilder {
+        ConnSignBuilder::default()
     }
 
     /// Load a `ConnSign` key bundle from raw bytes.
@@ -246,6 +275,7 @@ impl ConnSign {
             ed25519_key_pair,
             ml_dsa_pkcs8,
             ed25519_pkcs8,
+            quantum_insecure: false,
         })
     }
 
@@ -328,14 +358,26 @@ impl ConnSign {
         let ed25519_sig = self.ed25519_key_pair.sign(data);
         let mut sig =
             Vec::with_capacity(ml_dsa_sig.len() + ed25519_sig.as_ref().len() + data.len());
-        sig.extend(ml_dsa_sig);
+        if !self.quantum_insecure {
+            sig.extend(ml_dsa_sig);
+        }
         sig.extend(ed25519_sig.as_ref());
         Ok(sig)
     }
 
     /// Create a public-only verifier from this signer's public key bundle.
     pub fn verifier(&self) -> Result<ConnVerify> {
-        Ok(ConnVerify::new(self.public_key_bytes()?))
+        let mut verify = ConnVerify::new(self.public_key_bytes()?);
+        verify.quantum_insecure = self.quantum_insecure;
+        Ok(verify)
+    }
+
+    /// Create a public-only verifier from this signer's public key bundle.
+    #[must_use]
+    pub fn peer_verifier(&self, pubkey: impl Into<Vec<u8>>) -> ConnVerify {
+        let mut verify = ConnVerify::new(pubkey.into());
+        verify.quantum_insecure = self.quantum_insecure;
+        verify
     }
 }
 
@@ -385,13 +427,17 @@ impl PacketVerify {
 /// Verifier for the long term `ConnSign` key.
 pub struct ConnVerify {
     public_key_bundle: Vec<u8>,
+    quantum_insecure: bool,
 }
 
 impl ConnVerify {
     /// Create a `ConnSign` verifier from bundled ML-DSA and Ed25519 public key bytes.
     #[must_use]
     pub fn new(public_key_bundle: Vec<u8>) -> Self {
-        Self { public_key_bundle }
+        Self {
+            public_key_bundle,
+            quantum_insecure: false,
+        }
     }
 
     /// Verify a detached ML-DSA+Ed25519 signature bundle against `data`.
@@ -407,17 +453,23 @@ impl ConnVerify {
     pub fn verify<'a>(&self, data: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
         let (ml_dsa_public_key_der, ed25519_public_key) =
             decode_conn_public_key(&self.public_key_bundle).ok()?;
-        let ml_dsa_sig_len = ML_DSA_44_SIGNING.signature_len();
-        let total_sig_len = conn_signature_len();
+        let total_sig_len = conn_signature_len(self.quantum_insecure);
         if data.len() < total_sig_len {
             return None;
         }
-        let (sig, msg) = data.split_at(total_sig_len);
-        let (ml_dsa_sig, ed25519_sig) = sig.split_at(ml_dsa_sig_len);
 
-        let ml_dsa_public_key =
-            UnparsedPublicKey::new(&ML_DSA_44, ml_dsa_public_key_der.as_slice());
-        ml_dsa_public_key.verify(msg, ml_dsa_sig).ok()?;
+        let (sig, msg) = data.split_at(total_sig_len);
+        let ed25519_sig = if self.quantum_insecure {
+            sig
+        } else {
+            let ml_dsa_sig_len = ML_DSA_44_SIGNING.signature_len();
+            let (ml_dsa_sig, ed25519_sig) = sig.split_at(ml_dsa_sig_len);
+
+            let ml_dsa_public_key =
+                UnparsedPublicKey::new(&ML_DSA_44, ml_dsa_public_key_der.as_slice());
+            ml_dsa_public_key.verify(msg, ml_dsa_sig).ok()?;
+            ed25519_sig
+        };
 
         let ed25519_public_key = UnparsedPublicKey::new(&ED25519, ed25519_public_key);
         ed25519_public_key.verify(msg, ed25519_sig).ok()?;
@@ -431,10 +483,10 @@ impl ConnVerify {
         prefix: &[u8],
         data: &'a [u8],
     ) -> Option<std::borrow::Cow<'a, [u8]>> {
-        if data.len() < conn_signature_len() {
+        if data.len() < conn_signature_len(self.quantum_insecure) {
             return None;
         }
-        let (signature, message) = data.split_at(conn_signature_len());
+        let (signature, message) = data.split_at(conn_signature_len(self.quantum_insecure));
         let mut signed = Vec::with_capacity(signature.len() + prefix.len() + message.len());
         signed.extend(signature);
         signed.extend(prefix);

@@ -47,6 +47,10 @@ struct Args {
     /// Handshake timeout in seconds.
     #[arg(long = "handshake-timeout", default_value = axsh::DEFAULT_HANDSHAKE_TIMEOUT_STR, value_parser = axsh::parse_duration)]
     handshake_timeout: std::time::Duration,
+
+    /// Post Quantum insecure.
+    #[arg(long)]
+    quantum_insecure: bool,
 }
 
 /// Load known-hosts entries from file.
@@ -210,7 +214,10 @@ async fn main() -> std::io::Result<()> {
     info!("Handshaking…");
     let mut client = {
         let addr = args.addr.clone();
-        let conn_sign = ConnSign::from_file(&args.key_path).map_err(std::io::Error::other)?;
+        let conn_sign = ConnSign::builder()
+            .quantum_insecure(args.quantum_insecure)
+            .from_file(&args.key_path)
+            .map_err(std::io::Error::other)?;
         let known_hosts = load_known_hosts(&args.known_hosts_path)?;
         let known_hosts_path = args.known_hosts_path.clone();
         let expected_server_key = known_hosts.get(&args.addr).cloned();
